@@ -195,7 +195,7 @@ static void bchfs_read(struct btree_trans *trans,
 	bch2_trans_begin(trans);
 	CLASS(btree_iter, iter)(trans, BTREE_ID_extents,
 			     POS(inum.inum, rbio->bio.bi_iter.bi_sector),
-			     BTREE_ITER_slots);
+			     BTREE_ITER_slots|BTREE_ITER_prefetch);
 	while (1) {
 		struct bkey_s_c k;
 		unsigned bytes, sectors;

@@ -1713,7 +1713,7 @@ int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 
 	CLASS(btree_iter, iter)(trans, BTREE_ID_extents,
 				POS(inum.inum, bvec_iter.bi_sector),
-				BTREE_ITER_slots);
+				BTREE_ITER_slots|BTREE_ITER_prefetch);
 
 	while (1) {
 		data_btree = BTREE_ID_extents;
