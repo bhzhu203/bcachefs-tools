@@ -1711,6 +1711,13 @@ int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 	struct bkey_buf sk __cleanup(bch2_bkey_buf_exit);
 	bch2_bkey_buf_init(&sk);
 
+	bch2_trans_begin(trans);
+
+	u32 snapshot;
+	ret = bch2_subvolume_get_snapshot(trans, inum.subvol, &snapshot);
+	if (ret)
+		goto err;
+
 	CLASS(btree_iter, iter)(trans, BTREE_ID_extents,
 				POS(inum.inum, bvec_iter.bi_sector),
 				BTREE_ITER_slots|BTREE_ITER_prefetch);
@@ -1719,11 +1726,6 @@ int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 		data_btree = BTREE_ID_extents;
 
 		bch2_trans_begin(trans);
-
-		u32 snapshot;
-		ret = bch2_subvolume_get_snapshot(trans, inum.subvol, &snapshot);
-		if (ret)
-			goto err;
 
 		bch2_btree_iter_set_snapshot(&iter, snapshot);
 
