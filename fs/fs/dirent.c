@@ -822,7 +822,7 @@ int bch2_readdir(struct bch_fs *c, subvol_inum inum,
 				iter, BTREE_ID_dirents,
 				POS(inum.inum, ctx->pos),
 				POS(inum.inum, U64_MAX),
-				inum.subvol, 0, k, ({
+				inum.subvol, BTREE_ITER_prefetch, k, ({
 			if (k.k->type != KEY_TYPE_dirent)
 				continue;
 
