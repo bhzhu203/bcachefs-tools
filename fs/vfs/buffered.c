@@ -293,6 +293,12 @@ static void bchfs_read(struct btree_trans *trans,
 	bch2_bkey_buf_init(&sk);
 
 	bch2_trans_begin(trans);
+
+	u32 snapshot;
+	ret = bch2_subvolume_get_snapshot(trans, inum.subvol, &snapshot);
+	if (ret)
+		goto err;
+
 	CLASS(btree_iter, iter)(trans, BTREE_ID_extents,
 			     POS(inum.inum, rbio->bio.bi_iter.bi_sector),
 			     BTREE_ITER_slots|BTREE_ITER_prefetch);
@@ -303,11 +309,6 @@ static void bchfs_read(struct btree_trans *trans,
 		enum btree_id data_btree = BTREE_ID_extents;
 
 		bch2_trans_begin(trans);
-
-		u32 snapshot;
-		ret = bch2_subvolume_get_snapshot(trans, inum.subvol, &snapshot);
-		if (ret)
-			goto err;
 
 		bch2_btree_iter_set_snapshot(&iter, snapshot);
 
