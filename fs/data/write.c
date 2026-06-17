@@ -2290,17 +2290,25 @@ static bool bch2_nocow_write(struct bch_write_op *op)
 retry:
 	bch2_trans_begin(trans);
 
-	ret = bch2_subvolume_get_snapshot(trans, op->subvol, &snapshot);
-	if (unlikely(ret))
-		goto err;
+	if (op->snapshot) {
+		snapshot = op->snapshot;
+	} else {
+		ret = bch2_subvolume_get_snapshot(trans, op->subvol, &snapshot);
+		if (unlikely(ret))
+			goto err;
+	}
 
-	u64 i_size;
-	ret = bch2_inode_get_i_size(trans, SPOS(0, op->pos.inode, snapshot), &i_size);
-	if (unlikely(ret))
-		goto err;
-
-	if (op->new_i_size > i_size)
+	if (op->new_i_size == U64_MAX) {
 		op->flags |= BCH_WRITE_convert_unwritten;
+	} else {
+		u64 i_size;
+		ret = bch2_inode_get_i_size(trans, SPOS(0, op->pos.inode, snapshot), &i_size);
+		if (unlikely(ret))
+			goto err;
+
+		if (op->new_i_size > i_size)
+			op->flags |= BCH_WRITE_convert_unwritten;
+	}
 
 	bch2_trans_iter_init(trans, &iter, BTREE_ID_extents,
 			     SPOS(op->pos.inode, op->pos.offset, snapshot),
@@ -2430,6 +2438,15 @@ err:
 	} else if (op->flags & BCH_WRITE_sync) {
 		closure_sync(&op->cl);
 		bch2_nocow_write_done(&op->cl.work);
+	} else if (op->nocow_fast_check && op->nocow_fast_check(op)) {
+		/*
+		 * DIO nocow with all data written and no O_DSYNC flush:
+		 * the completion chain is non-blocking (no ei_quota_lock
+		 * mutex since i_sectors_delta == 0, no flush, no further
+		 * bios). Skip the btree_update_wq hop.
+		 */
+		closure_sync(&op->cl);
+		bch2_nocow_write_done(&op->cl.work);
 	} else {
 		/*
 		 * XXX
@@ -2488,6 +2505,28 @@ static void __bch2_write(struct bch_write_op *op)
 		     c->opts.nocow_enabled) &&
 	    bch2_nocow_write(op))
 		return;
+
+	if (op->flags & BCH_WRITE_defer_reservation) {
+		op->flags &= ~BCH_WRITE_defer_reservation;
+
+		int res_ret = bch2_disk_reservation_get(c, &op->res,
+				bio_sectors(&op->wbio.bio),
+				op->opts.data_replicas, 0);
+		if (unlikely(res_ret)) {
+			op->error = res_ret;
+			goto err_defer;
+		}
+		op->flags |= BCH_WRITE_check_enospc;
+
+		if (op->reserve_cow) {
+			res_ret = op->reserve_cow(op);
+			if (unlikely(res_ret)) {
+				bch2_disk_reservation_put(c, &op->res);
+				op->error = res_ret;
+				goto err_defer;
+			}
+		}
+	}
 again:
 	op->wbio.failed.nr = 0;
 
@@ -2623,6 +2662,19 @@ err:
 		bch2_write_queue(op, wp);
 		continue_at(&op->cl, bch2_write_index, NULL);
 	}
+	return;
+err_defer:
+	op->flags |= BCH_WRITE_submitted;
+	bch2_disk_reservation_put(c, &op->res);
+
+	if (!(op->flags & BCH_WRITE_move))
+		enumerated_ref_put(&c->writes, BCH_WRITE_REF_write);
+	bch2_keylist_free(&op->insert_keys, op->inline_keys);
+
+	closure_debug_destroy(&op->cl);
+	async_object_list_del(c, write_op, op->list_idx);
+	if (op->end_io)
+		op->end_io(op);
 }
 
 static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)

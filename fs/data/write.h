@@ -37,6 +37,8 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 {
 	op->c			= c;
 	op->end_io		= NULL;
+	op->nocow_fast_check	= NULL;
+	op->reserve_cow		= NULL;
 	op->flags		= 0;
 	op->io_error		= false;
 	op->written		= 0;
@@ -51,6 +53,7 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 	op->target		= 0;
 	op->opts		= opts;
 	op->subvol		= 0;
+	op->snapshot		= 0;
 	op->pos			= POS_MAX;
 	op->version		= ZERO_VERSION;
 	op->write_point		= (struct write_point_specifier) { 0 };

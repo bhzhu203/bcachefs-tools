@@ -13,9 +13,12 @@
 #include <linux/uio.h>
 
 struct nocow_flush {
-	struct closure	*cl;
-	struct bch_dev	*ca;
-	struct bio	bio;
+	struct closure		*cl;
+	struct bch_dev		*ca;
+	struct bch_inode_info	*inode;
+	unsigned		dev;
+	struct work_struct	work;
+	struct bio		bio;
 };
 
 struct folio_vec {
