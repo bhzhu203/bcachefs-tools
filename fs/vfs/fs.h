@@ -81,8 +81,6 @@ struct bch_inode_info {
 	 * number that needs flushing.
 	 */
 	struct bch_devs_mask	ei_devs_need_flush;
-	struct bch_devs_mask	ei_devs_flush_in_flight;
-	spinlock_t		ei_flush_lock;
 
 	/* copy of inode in btree: */
 	struct bch_inode_unpacked ei_inode;

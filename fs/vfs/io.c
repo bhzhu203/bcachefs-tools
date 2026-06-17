@@ -46,34 +46,11 @@
 
 #include <trace/events/writeback.h>
 
-static void nocow_flush_followup_work(struct work_struct *work)
-{
-	struct nocow_flush *bio = container_of(work, struct nocow_flush, work);
-
-	submit_bio(&bio->bio);
-}
-
 static void nocow_flush_endio(struct bio *_bio)
 {
 	struct nocow_flush *bio = container_of(_bio, struct nocow_flush, bio);
-	struct bch_inode_info *inode = bio->inode;
 
 	closure_put(bio->cl);
-
-	spin_lock(&inode->ei_flush_lock);
-	if (test_bit(bio->dev, inode->ei_devs_need_flush.d)) {
-		clear_bit(bio->dev, inode->ei_devs_need_flush.d);
-		spin_unlock(&inode->ei_flush_lock);
-
-		bio_get(&bio->bio);
-		INIT_WORK(&bio->work, nocow_flush_followup_work);
-		schedule_work(&bio->work);
-
-		bio_put(&bio->bio);
-		return;
-	}
-	clear_bit(bio->dev, inode->ei_devs_flush_in_flight.d);
-	spin_unlock(&inode->ei_flush_lock);
 
 	enumerated_ref_put(&bio->ca->io_ref[WRITE],
 			   BCH_DEV_WRITE_REF_nocow_flush);
@@ -84,24 +61,13 @@ void bch2_inode_flush_nocow_writes_async(struct bch_fs *c,
 					 struct bch_inode_info *inode,
 					 struct closure *cl)
 {
-	struct bch_devs_mask devs;
-
-	spin_lock(&inode->ei_flush_lock);
-	devs = inode->ei_devs_need_flush;
+	struct bch_devs_mask devs = inode->ei_devs_need_flush;
 	memset(&inode->ei_devs_need_flush, 0, sizeof(inode->ei_devs_need_flush));
-
-	unsigned dev;
-	for_each_set_bit(dev, devs.d, BCH_SB_MEMBERS_MAX)
-		if (test_bit(dev, inode->ei_devs_flush_in_flight.d))
-			clear_bit(dev, devs.d);
-
-	for_each_set_bit(dev, devs.d, BCH_SB_MEMBERS_MAX)
-		set_bit(dev, inode->ei_devs_flush_in_flight.d);
-	spin_unlock(&inode->ei_flush_lock);
 
 	if (bitmap_empty(devs.d, BCH_SB_MEMBERS_MAX))
 		return;
 
+	unsigned dev;
 	for_each_set_bit(dev, devs.d, BCH_SB_MEMBERS_MAX) {
 		struct bch_dev *ca;
 
@@ -122,8 +88,6 @@ void bch2_inode_flush_nocow_writes_async(struct bch_fs *c,
 						       struct nocow_flush, bio);
 		bio->cl			= cl;
 		bio->ca			= ca;
-		bio->inode		= inode;
-		bio->dev		= dev;
 		bio->bio.bi_end_io	= nocow_flush_endio;
 		closure_bio_submit(&bio->bio, cl);
 	}
