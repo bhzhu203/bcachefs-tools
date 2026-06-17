@@ -175,6 +175,8 @@ c_xmacro! {
         (blocked_discard_journal_flush,
          "Blocked: discard worker waiting for journal flush "
          "to advance rewind_seq and release buckets"),
+        (recovery_pass,
+         "Individual recovery pass execution time during mount"),
     }
 }
 
