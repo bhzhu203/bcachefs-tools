@@ -413,7 +413,9 @@ BCH_DEBUG_PARAMS_ALL()
 	  "Nocow lock contention")					\
 	x(blocked_discard_journal_flush,				\
 	  "Blocked: discard worker waiting for journal flush "		\
-	  "to advance rewind_seq and release buckets")
+	  "to advance rewind_seq and release buckets")			\
+	x(recovery_pass,						\
+	  "Individual recovery pass execution time during mount")
 
 enum bch_time_stats {
 #define x(name, ...) BCH_TIME_##name,
