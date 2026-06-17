@@ -795,7 +795,7 @@ static void bch2_maybe_schedule_btree_bitmap_gc_work(struct work_struct *work)
 		u64 btree_sectors = bucket_to_sector(ca, u.buckets[BCH_DATA_btree]);
 		u64 bitmap_sectors = hweight64(ca->mi.btree_allocated_bitmap) << ca->mi.btree_bitmap_shift;
 
-		if (btree_sectors * 4 < bitmap_sectors) {
+		if (btree_sectors * 2 < bitmap_sectors) {
 			prt_printf(&msg.m, "%s has ", ca->name);
 			prt_human_readable_u64(&msg.m, btree_sectors << 9);
 			prt_printf(&msg.m, " btree buckets and ");
@@ -810,7 +810,7 @@ static void bch2_maybe_schedule_btree_bitmap_gc_work(struct work_struct *work)
 			BCH_RECOVERY_PASS_btree_bitmap_gc,
 			RUN_RECOVERY_PASS_ratelimit);
 
-	queue_delayed_work(system_long_wq, &c->maybe_schedule_btree_bitmap_gc, HZ * 60 * 60 * 24);
+	queue_delayed_work(system_long_wq, &c->maybe_schedule_btree_bitmap_gc, HZ * 60 * 60 * 6);
 }
 
 void bch2_maybe_schedule_btree_bitmap_gc_stop(struct bch_fs *c)
