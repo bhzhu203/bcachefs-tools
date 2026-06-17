@@ -576,6 +576,7 @@ static int bch2_run_recovery_pass(struct bch_fs *c, enum bch_recovery_pass pass)
 		bch2_print(c, KERN_INFO bch2_log_msg(c, "%s..."),
 			   bch2_recovery_passes[pass]);
 
+	u64 start_ns = local_clock();
 	s64 start_time = ktime_get_real_seconds();
 	int ret = p->fn(c);
 	if (ret) {
@@ -597,6 +598,8 @@ static int bch2_run_recovery_pass(struct bch_fs *c, enum bch_recovery_pass pass)
 		}
 		return ret;
 	}
+
+	bch2_time_stats_update(&c->times[BCH_TIME_recovery_pass], start_ns);
 
 	if (!(p->when & PASS_SILENT))
 		bch2_print(c, KERN_CONT " done (%lli seconds)\n",
