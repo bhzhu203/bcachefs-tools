@@ -8,7 +8,7 @@ use cstruct_macros::{c_const, CStruct};
 
 c_const! {
     #[c_int]
-    pub const BUCKET_NOCOW_LOCKS_BITS: u32 = 10;
+    pub const BUCKET_NOCOW_LOCKS_BITS: u32 = 12;
     pub const BUCKET_NOCOW_LOCKS: u32 = 1 << c::BUCKET_NOCOW_LOCKS_BITS;
 
     #[c_int]
