@@ -1197,13 +1197,63 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 {
 	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(k));
 	struct bch_write_bio *n;
+
+	BUG_ON(c->opts.nochanges);
+	BUG_ON(nocow && !cas);
+
+	/*
+	 * Fast path for nocow single-replica: skip the two bkey_for_each_ptr
+	 * loops (find-last + submit), the ref setup, and the clone path.
+	 */
+	if (nocow) {
+		const struct bch_extent_ptr *first_valid = NULL;
+		unsigned nr_valid = 0;
+
+		bkey_for_each_ptr(ptrs, ptr) {
+			if (ptr->dev != BCH_SB_MEMBER_INVALID) {
+				if (!first_valid)
+					first_valid = ptr;
+				nr_valid++;
+			}
+		}
+
+		if (nr_valid == 1) {
+			const struct bch_extent_ptr *ptr = first_valid;
+			struct bch_dev *ca = cas[0];
+
+			wbio->split		= false;
+			wbio->c			= c;
+			wbio->ca		= ca;
+			wbio->dev		= ptr->dev;
+			wbio->nocow		= true;
+			wbio->submit_time	= local_clock();
+			wbio->inode_offset	= bkey_start_offset(&k->k);
+			wbio->nocow_bucket	= PTR_BUCKET_NR(ca, ptr);
+			wbio->bio.bi_iter.bi_sector = ptr->offset;
+
+			if (likely(ca)) {
+				this_cpu_add(ca->io_done->sectors[WRITE][type],
+					     bio_sectors(&wbio->bio));
+				bio_set_dev(&wbio->bio, ca->disk_sb.bdev);
+
+				if (unlikely(c->opts.no_data_io)) {
+					bio_endio(&wbio->bio);
+					return;
+				}
+
+				submit_bio(&wbio->bio);
+			} else {
+				wbio->bio.bi_status = BLK_STS_REMOVED;
+				bio_endio(&wbio->bio);
+			}
+			return;
+		}
+	}
+
 	unsigned ref_rw  = type == BCH_DATA_btree ? READ : WRITE;
 	unsigned ref_idx = type == BCH_DATA_btree
 		? (unsigned) BCH_DEV_READ_REF_btree_node_write
 		: (unsigned) BCH_DEV_WRITE_REF_io_write;
-
-	BUG_ON(c->opts.nochanges);
-	BUG_ON(nocow && !cas);
 
 	const struct bch_extent_ptr *last = NULL;
 	bkey_for_each_ptr(ptrs, ptr)
@@ -2371,16 +2421,19 @@ retry:
 		k = bkey_i_to_s_c(op->insert_keys.top);
 		ptrs = bch2_bkey_ptrs_c(k);
 
+		/*
+		 * Fast path: try nocow trylock while holding btree locks.
+		 * If it succeeds, pointers are guaranteed fresh (btree locks
+		 * prevented copygc from reusing buckets), so we can skip the
+		 * generation/stale check entirely.
+		 */
+		bool nocow_trylocked = bch2_bkey_nocow_trylock(c, ptrs, cas,
+							       BUCKET_NOCOW_LOCK_UPDATE);
 		bch2_trans_unlock(trans);
 
-		bch2_bkey_nocow_lock(c, trans, ptrs, cas, BUCKET_NOCOW_LOCK_UPDATE);
+		if (!nocow_trylocked) {
+			bch2_bkey_nocow_lock(c, trans, ptrs, cas, BUCKET_NOCOW_LOCK_UPDATE);
 
-		/*
-		 * This could be handled better: If we're able to trylock the
-		 * nocow locks with btree locks held we know dirty pointers
-		 * can't be stale
-		 */
-		{
 			unsigned i = 0;
 			bkey_for_each_ptr(ptrs, ptr) {
 				struct bch_dev *ca = cas[i++];
@@ -2392,6 +2445,11 @@ retry:
 					goto err_bucket_stale;
 				}
 
+				if (ptr->unwritten)
+					op->flags |= BCH_WRITE_convert_unwritten;
+			}
+		} else {
+			bkey_for_each_ptr(ptrs, ptr) {
 				if (ptr->unwritten)
 					op->flags |= BCH_WRITE_convert_unwritten;
 			}
