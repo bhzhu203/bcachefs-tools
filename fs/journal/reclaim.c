@@ -949,6 +949,7 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 	bool kthread = (current->flags & PF_KTHREAD) != 0;
 	u64 seq_to_flush;
 	size_t min_nr, min_key_cache, nr_flushed;
+	unsigned cascade_stall_count = 0;
 	int ret = 0;
 
 	/*
@@ -1017,6 +1018,24 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 
 		if (nr_flushed)
 			wake_up(&j->reclaim_wait);
+
+		/*
+		 * Cascade amplification detection: each flushed btree node triggers
+		 * update_key on its parent, dirtying it. When dirty_after >= dirty_before
+		 * for multiple consecutive rounds, the cascade is self-sustaining and
+		 * reclaim is feeding it faster than it converges. Break out and let
+		 * in-flight update_key work complete before the next reclaim cycle.
+		 */
+		if (!direct && nr_flushed) {
+			size_t dirty_after = bc->live[0].nr_dirty + bc->live[1].nr_dirty;
+			if (dirty_after >= btree_cache_dirty)
+				cascade_stall_count++;
+			else
+				cascade_stall_count = 0;
+
+			if (cascade_stall_count >= 3)
+				break;
+		}
 	} while ((min_nr || min_key_cache) && nr_flushed && !direct);
 
 	return ret;
