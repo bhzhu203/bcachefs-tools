@@ -6,6 +6,7 @@
 #include "alloc/foreground.h"
 
 #include "btree/bkey_buf.h"
+#include "btree/cache.h"
 
 #include "data/read.h"
 #include "data/write.h"
@@ -663,6 +664,19 @@ static bool can_write_now(struct bch_fs *c, unsigned replicas_want, struct closu
 
 	if (BCH_WATERMARK_normal < c->journal.watermark && !bch2_journal_error(&c->journal)) {
 		closure_wait(&c->journal.async_wait, cl);
+		return false;
+	}
+
+	/*
+	 * When the btree cascade (flush node -> update_key parent -> parent dirty
+	 * -> flush parent -> ...) is generating heavy inner node writes, pause
+	 * writeback to avoid saturating device bandwidth with competing IO streams.
+	 * This is especially important for nocow writeback which bypasses the
+	 * allocator-based open bucket check above.
+	 */
+	if (atomic_long_read(&c->btree.cache.nr_in_flight_inner) >
+	    BTREE_WRITE_IO_LIMIT(c) * 3 / 4) {
+		closure_wait(&c->btree.cache.nr_in_flight_wait, cl);
 		return false;
 	}
 
