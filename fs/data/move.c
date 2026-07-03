@@ -253,7 +253,7 @@ static int __bch2_move_extent(struct moving_context *ctxt,
 
 	u->op.end_io		= move_write_done;
 	u->rbio.bio.bi_end_io	= move_read_endio;
-	u->rbio.bio.bi_ioprio	= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 4);
+	u->rbio.bio.bi_ioprio	= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0);
 
 	u32 size = k.k->size;
 
