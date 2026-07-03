@@ -1006,7 +1006,7 @@ static int bch2_data_update_bios_init(struct data_update *m, struct bch_fs *c,
 	m->rbio.data_update		= true;
 	m->rbio.bio.bi_iter.bi_size	= buf_bytes;
 	m->rbio.bio.bi_iter.bi_sector	= bkey_start_offset(&m->k.k->k);
-	m->op.wbio.bio.bi_ioprio	= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 4);
+	m->op.wbio.bio.bi_ioprio	= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0);
 	return 0;
 }
 
