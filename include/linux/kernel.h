@@ -305,6 +305,11 @@ struct qstr {
 #define unsafe_memcpy(dst, src, bytes, justification)		\
 	memcpy(dst, src, bytes)
 
+#ifndef __DECLARE_FLEX_ARRAY
+#define __DECLARE_FLEX_ARRAY(TYPE, NAME) \
+    TYPE NAME[0]
+#endif
+
 #ifdef __DECLARE_FLEX_ARRAY
 #define DECLARE_FLEX_ARRAY(TYPE, NAME) __DECLARE_FLEX_ARRAY(TYPE, NAME)
 #else
