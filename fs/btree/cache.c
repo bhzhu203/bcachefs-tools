@@ -134,6 +134,14 @@ void bch2_recalc_btree_reserve(struct bch_fs *c)
 			reserve += min_t(unsigned, 1, r->b->c.level) * 8;
 	}
 
+	/*
+	 * On HDD, pre-allocate more nodes: cache misses are expensive (seek
+	 * latency), so we want a larger cache to reduce IO wait and lock
+	 * contention.
+	 */
+	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
+		reserve *= 2;
+
 	c->btree.cache.nr_reserve = reserve;
 }
 
@@ -774,6 +782,14 @@ static unsigned long __bch2_btree_cache_scan(struct shrinker *shrink,
 	if (static_branch_unlikely(&bch2_btree_shrinker_disabled))
 		return SHRINK_STOP;
 
+	/*
+	 * Under extreme memory pressure (gfp_mask without __GFP_IO), the
+	 * kernel cannot start IO and needs memory NOW. Bypass all HDD
+	 * protections to maximize eviction: we can't afford to protect
+	 * interior nodes or reduce scan count when the system is OOM.
+	 */
+	bool under_pressure = !(sc->gfp_mask & __GFP_IO);
+
 	u64 start_time = local_clock();
 	guard(mutex_noio)(&bc->lock);
 
@@ -793,6 +809,15 @@ static unsigned long __bch2_btree_cache_scan(struct shrinker *shrink,
 		bc->not_freed[BCH_BTREE_CACHE_NOT_FREED_cache_reserve] += nr - can_free - writeback;
 		nr = can_free;
 	}
+
+	/*
+	 * On HDD, keep more btree nodes in cache: cache misses are expensive
+	 * (seek latency) and transactions hold locks while waiting for IO,
+	 * increasing contention. Reduce eviction pressure to keep hot nodes
+	 * in memory. Bypass under extreme memory pressure.
+	 */
+	if (!under_pressure && !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
+		nr = (nr + 1) / 2;
 
 	unsigned i = 0;
 	list_for_each_entry_safe(b, t, &bc->freeable, list) {
@@ -815,6 +840,8 @@ static unsigned long __bch2_btree_cache_scan(struct shrinker *shrink,
 			freed++;
 		}
 	}
+	bool is_hdd = !under_pressure && !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
+
 	list_for_each_entry_safe(b, t, &list->clean, list) {
 		if (btree_node_permanent(b))
 			continue;
@@ -823,6 +850,18 @@ static unsigned long __bch2_btree_cache_scan(struct shrinker *shrink,
 
 		if (btree_node_accessed(b)) {
 			clear_btree_node_accessed(b);
+			bc->not_freed[BCH_BTREE_CACHE_NOT_FREED_access_bit]++;
+			--touched;
+		} else if (is_hdd && b->c.level > 0) {
+			/*
+			 * On HDD, interior nodes get a "second chance": they
+			 * are accessed by every transaction traversing the
+			 * tree, so evicting them causes cache misses that
+			 * hold locks while waiting for slow HDD reads. Set
+			 * the accessed bit to protect them from the next
+			 * shrinker pass.
+			 */
+			set_btree_node_accessed(b);
 			bc->not_freed[BCH_BTREE_CACHE_NOT_FREED_access_bit]++;
 			--touched;
 		} else if (!btree_node_reclaim(c, b, BTREE_NODE_RECLAIM_shrinker)) {
@@ -866,8 +905,18 @@ static unsigned long bch2_btree_cache_count(struct shrinker *shrink,
 	if (static_branch_unlikely(&bch2_btree_shrinker_disabled))
 		return 0;
 
-	return btree_cache_can_free(list) +
+	unsigned long can_free = btree_cache_can_free(list) +
 		(btree_cache_replay_writeback(c) ? READ_ONCE(list->nr_dirty) : 0);
+
+	/*
+	 * On HDD, report fewer reclaimable objects to reduce shrinker pressure.
+	 * Bypass under extreme memory pressure.
+	 */
+	if ((sc->gfp_mask & __GFP_IO) &&
+	    !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
+		can_free = (can_free + 1) / 2;
+
+	return can_free;
 }
 
 /*
