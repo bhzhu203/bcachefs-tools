@@ -551,6 +551,7 @@ void bch2_sb_members_to_cpu(struct bch_fs *c)
 		ca->mi.failure_domain = id;
 	}
 	darray_exit(&domains);
+	bch2_trans_throttle_update(c);
 
 	struct bch_sb_field_members_v2 *mi2 = bch2_sb_field_get(c->disk_sb.sb, members_v2);
 	if (mi2)

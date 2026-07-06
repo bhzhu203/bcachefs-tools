@@ -676,7 +676,30 @@ int bch2_six_check_for_deadlock(struct six_lock *lock, struct six_lock_waiter *w
 		WRITE_ONCE(current->wake_cpu, trans->shard_cpu);
 #endif
 
-	return bch2_check_for_deadlock(trans, NULL);
+	struct bch_fs *c = trans->c;
+
+	int ret = bch2_check_for_deadlock(trans, NULL);
+	if (ret)
+		return ret;
+
+	/*
+	 * On HDD, break livelock chains: if a transaction has been waiting
+	 * for a btree lock for too long, restart it. The lock holder may
+	 * be blocked on slow IO or another dependency, creating a chain
+	 * that prevents forward progress. By restarting, we break the
+	 * chain and allow the lock holder to complete.
+	 *
+	 * 30 seconds is long enough to avoid false positives (legitimate
+	 * HDD reads take ~20ms, so even a chain of 100 would be 2s).
+	 */
+	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX) &&
+	    w->trans_start_time &&
+	    local_clock() - w->trans_start_time > 30ULL * NSEC_PER_SEC) {
+		return btree_trans_restart(trans,
+			BCH_ERR_transaction_restart_deadlock_waitlist_alloc) ?: -EINTR;
+	}
+
+	return 0;
 }
 
 /*
