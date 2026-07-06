@@ -1336,6 +1336,7 @@ struct bkey_s_c bch2_btree_iter_peek_root(struct btree_trans *, struct btree_ite
 
 struct btree_trans *__bch2_trans_get(struct bch_fs *, unsigned);
 void bch2_trans_put(struct btree_trans *);
+void bch2_trans_throttle_update(struct bch_fs *);
 
 bool bch2_current_has_btree_trans(struct bch_fs *);
 

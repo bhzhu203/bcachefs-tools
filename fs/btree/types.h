@@ -698,6 +698,7 @@ struct btree_trans {
 	 */
 	bool			begin_may_drop_updates:1;
 	bool			has_interior_updates:1;
+	bool			throttled:1;
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
 #ifdef CONFIG_BCACHEFS_INJECT_TRANSACTION_RESTARTS
@@ -810,6 +811,17 @@ struct bch_fs_btree_trans {
 
 	struct srcu_struct		barrier;
 	bool				barrier_initialized;
+
+	/*
+	 * Transaction admission control: on HDD, limit concurrent btree
+	 * transactions to reduce six_lock contention. When too many
+	 * transactions compete for the same btree nodes, lock wait times
+	 * explode because each transaction holds locks while waiting for
+	 * slow HDD IO.
+	 */
+	struct semaphore		throttle;
+	atomic_t			nr_active;
+	bool				throttle_enabled;
 
 	struct btree_transaction_stats	stats[BCH_TRANSACTIONS_NR];
 
