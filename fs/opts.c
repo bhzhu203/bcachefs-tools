@@ -760,6 +760,16 @@ void bch2_opt_hook_post_set(struct bch_fs *c, struct bch_dev *ca, u64 inum,
 			bch2_recalc_capacity(c);
 		}
 		break;
+	case Opt_dev_readahead:
+		/*
+		 * dev_readahead affects bch2_set_ra_pages() which is called
+		 * from bch2_recalc_capacity(). Without this, runtime changes
+		 * to dev_readahead via sysfs don't take effect until something
+		 * else triggers a recalc.
+		 */
+		if (test_bit(BCH_FS_rw, &c->flags))
+			bch2_recalc_capacity(c);
+		break;
 	case Opt_version_upgrade:
 		/*
 		 * XXX: in the future we'll likely want to do compatible
