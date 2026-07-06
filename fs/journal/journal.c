@@ -966,9 +966,19 @@ int bch2_journal_res_get_slowpath(struct journal *j, struct journal_res *res,
 	bch2_journal_debug_to_text(&buf, j);
 	bch2_print_str(c, KERN_ERR, buf.buf);
 
-	trans_wait_event(trans, &j->async_wait,
+	/*
+	 * On HDD, journal can deadlock when a transaction holds btree locks
+	 * while waiting for journal space. The journal needs the write buffer
+	 * flushed, but the write buffer flush needs those same btree locks.
+	 * Timeout after 30 seconds to break the cycle: the error causes the
+	 * transaction to release its locks, letting the write buffer flush
+	 * proceed and unblock the journal.
+	 */
+	if (!trans_wait_event_timeout(trans, &j->async_wait,
 		   !bch2_err_matches(ret = __journal_res_get(j, res, flags), BCH_ERR_operation_blocked) ||
-		   (flags & JOURNAL_RES_GET_NONBLOCK));
+		   (flags & JOURNAL_RES_GET_NONBLOCK),
+		   HZ * 30))
+		return bch_err_throw(c, journal_res_blocked);
 	return ret;
 }
 

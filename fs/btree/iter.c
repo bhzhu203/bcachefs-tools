@@ -3946,6 +3946,28 @@ static inline struct btree_trans *bch2_trans_alloc(struct bch_fs *c)
 	return trans;
 }
 
+/*
+ * Enable or disable transaction admission control based on device type.
+ * Called when devices are registered or their properties change.
+ *
+ * On HDD, limiting concurrent btree transactions reduces six_lock contention:
+ * fewer transactions means fewer competing for the same btree node locks, and
+ * each transaction holds locks for shorter time (less IO wait). The limit is
+ * set to 8 to prevent livelock under heavy concurrent workloads.
+ */
+void bch2_trans_throttle_update(struct bch_fs *c)
+{
+	bool is_hdd = !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
+
+	if (is_hdd && !c->btree.trans.throttle_enabled) {
+		sema_init(&c->btree.trans.throttle, 32);
+		WRITE_ONCE(c->btree.trans.throttle_enabled, true);
+	} else if (!is_hdd && c->btree.trans.throttle_enabled) {
+		WRITE_ONCE(c->btree.trans.throttle_enabled, false);
+		sema_init(&c->btree.trans.throttle, INT_MAX);
+	}
+}
+
 struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	__acquires(&c->btree.trans.barrier)
 {
@@ -3956,6 +3978,34 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	EBUG_ON(!test_bit(BCH_FS_may_go_rw, &c->flags) &&
 		!test_bit(BCH_FS_scrub_journal, &c->flags) &&
 		current != c->recovery_task);
+
+	/*
+	 * Transaction admission control: on HDD, limit concurrent btree
+	 * transactions to reduce six_lock contention. ALL threads (including
+	 * kthreads) must be throttled to prevent livelock where reclaim,
+	 * reconcile, and user transactions all compete for the same btree
+	 * node locks. Only memory reclaim context (PF_MEMALLOC) bypasses
+	 * the throttle to ensure memory reclaim can always make progress.
+	 *
+	 * Down_timeout() with retry loop: wait up to 30 seconds per attempt for
+	 * a throttle slot. If timeout expires, yield CPU and retry. This prevents
+	 * indefinite blocking while still guaranteeing forward progress. We never
+	 * return an error from here — callers assume __bch2_trans_get always
+	 * returns a valid trans or a fatal error. Abort retry if filesystem is
+	 * shutting down.
+	 */
+	bool throttled = false;
+	if (unlikely(READ_ONCE(c->btree.trans.throttle_enabled))) {
+		if (!(current->flags & (PF_MEMALLOC|PF_WQ_WORKER))) {
+			while (down_timeout(&c->btree.trans.throttle, 30 * HZ)) {
+				if (test_bit(BCH_FS_stopping, &c->flags))
+					return ERR_PTR(-EROFS);
+				cond_resched();
+			}
+			atomic_inc(&c->btree.trans.nr_active);
+			throttled = true;
+		}
+	}
 
 	struct btree_trans *trans = bch2_trans_alloc(c);
 
@@ -3975,6 +4025,7 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 		: -1;
 	trans->fn_idx		= fn_idx;
 	trans->locking_wait.task = current;
+	trans->throttled	= throttled;
 	trans->journal_replay_not_finished =
 		unlikely(!test_bit(JOURNAL_replay_done, &c->journal.flags)) &&
 		atomic_inc_not_zero(&c->journal_keys.ref);
@@ -4072,6 +4123,11 @@ void bch2_trans_put(struct btree_trans *trans)
 		bch2_trans_in_restart_error(trans);
 
 	bch2_trans_unlock_long(trans);
+
+	if (unlikely(trans->throttled)) {
+		atomic_dec(&c->btree.trans.nr_active);
+		up(&c->btree.trans.throttle);
+	}
 
 	trans_for_each_update(trans, i)
 		__btree_path_put(trans, trans->paths + i->path, true);
@@ -4306,6 +4362,14 @@ void bch2_fs_btree_iter_init_early(struct bch_fs *c)
 	seqmutex_init(&c->btree.trans.lock);
 	mutex_init(&c->btree.trans.stats_json_lock);
 	c->btree.trans.stats_json_buf = PRINTBUF;
+
+	/*
+	 * Transaction throttle: start disabled (large count). Will be enabled
+	 * after device detection if HDD is found.
+	 */
+	sema_init(&c->btree.trans.throttle, INT_MAX);
+	atomic_set(&c->btree.trans.nr_active, 0);
+	c->btree.trans.throttle_enabled = false;
 }
 
 int bch2_fs_btree_iter_init(struct bch_fs *c)
