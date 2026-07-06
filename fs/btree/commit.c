@@ -7,6 +7,7 @@
 #include "alloc/foreground.h"
 #include "alloc/replicas.h"
 
+#include "btree/cache.h"
 #include "btree/check.h"
 #include "btree/iter.h"
 #include "btree/journal_overlay.h"
@@ -1393,7 +1394,7 @@ static noinline int bch2_trans_commit_btree_write_ratelimit(struct btree_trans *
 
 	return drop_locks_do(trans, ({
 		trans_wait_event(trans, &bc->nr_in_flight_wait,
-			atomic_long_read(&bc->nr_in_flight_inner) < BTREE_WRITE_IO_LIMIT(c) * 3 / 4 &&
+			atomic_long_read(&bc->nr_in_flight_inner) < BTREE_WRITE_IO_LIMIT(trans->c) * 3 / 4 &&
 			!bch2_btree_cache_should_throttle(c));
 		0;
 	}));

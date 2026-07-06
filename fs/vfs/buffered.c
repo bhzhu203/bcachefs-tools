@@ -673,9 +673,26 @@ static bool can_write_now(struct bch_fs *c, unsigned replicas_want, struct closu
 	 * writeback to avoid saturating device bandwidth with competing IO streams.
 	 * This is especially important for nocow writeback which bypasses the
 	 * allocator-based open bucket check above.
+	 *
+	 * On HDD, btree writes are seek-limited and mq-deadline does not honor
+	 * write ioprio, so throttle data writeback more aggressively to ensure
+	 * btree writes complete and free journal pins (preventing journal_max_open).
 	 */
-	if (atomic_long_read(&c->btree.cache.nr_in_flight_inner) >
-	    BTREE_WRITE_IO_LIMIT(c) * 3 / 4) {
+	bool is_hdd = !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
+	unsigned in_flight_limit = is_hdd
+		? BTREE_WRITE_IO_LIMIT(c) / 4
+		: BTREE_WRITE_IO_LIMIT(c) * 3 / 4;
+
+	if (atomic_long_read(&c->btree.cache.nr_in_flight_inner) > in_flight_limit) {
+		closure_wait(&c->btree.cache.nr_in_flight_wait, cl);
+		return false;
+	}
+
+	/* On HDD, also throttle when dirty btree nodes exceed half the cache:
+	 * writes are accumulating faster than the device can flush them. */
+	if (is_hdd &&
+	    btree_cache_nr_dirty(&c->btree.cache) * 2 >
+	    btree_cache_nr_live(&c->btree.cache)) {
 		closure_wait(&c->btree.cache.nr_in_flight_wait, cl);
 		return false;
 	}

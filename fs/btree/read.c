@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#include <linux/ioprio.h>
+
 #include "bcachefs.h"
 
 #include "alloc/buckets.h"
@@ -946,6 +948,7 @@ static void btree_node_read_work(struct work_struct *work)
 		rb->ca			= ca;
 		rb->start_time		= local_clock();
 		bio_reset(bio, NULL, REQ_OP_READ|REQ_SYNC|REQ_META);
+		bio->bi_ioprio		= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 0);
 		bio->bi_iter.bi_sector	= rb->pick.ptr.offset;
 		bio->bi_iter.bi_size	= btree_buf_bytes(b);
 
@@ -1082,6 +1085,7 @@ void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 			       GFP_NOIO,
 			       &c->btree.bio);
 	rb = container_of(bio, struct btree_read_bio, bio);
+	bio->bi_ioprio		= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 0);
 	rb->c			= c;
 	rb->ca			= ca;
 	rb->b			= b;
