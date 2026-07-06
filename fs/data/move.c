@@ -9,6 +9,7 @@
 #include "alloc/replicas.h"
 
 #include "btree/bkey_buf.h"
+#include "btree/cache.h"
 #include "btree/check.h"
 #include "btree/interior.h"
 #include "btree/read.h"
@@ -507,6 +508,17 @@ int bch2_move_ratelimit(struct moving_context *ctxt)
 		atomic_read(&ctxt->read_sectors) < c->opts.move_bytes_in_flight >> 9 &&
 		atomic_read(&ctxt->write_ios) < c->opts.move_ios_in_flight &&
 		atomic_read(&ctxt->read_ios) < c->opts.move_ios_in_flight);
+
+	/*
+	 * On HDD, pause when btree writes are backed up: our reads compete
+	 * with btree writes on the device (mq-deadline dispatches reads before
+	 * writes regardless of ioprio), and can delay journal pin freeing.
+	 */
+	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
+		closure_wait_event(&c->btree.cache.nr_in_flight_wait,
+			(is_kthread && kthread_should_stop()) ||
+			atomic_long_read(&c->btree.cache.nr_in_flight_inner) <
+			BTREE_WRITE_IO_LIMIT(c) / 4);
 
 	return 0;
 }
