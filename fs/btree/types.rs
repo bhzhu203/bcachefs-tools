@@ -764,7 +764,8 @@ nest! {
              */
             begin_may_drop_updates:         bool,
             has_interior_updates:           bool,
-            __pad17:                        u15,
+            throttled:                      bool,
+            __pad17:                        u14,
             #[bits(16)] pub restarted: cs::bch_errcode,
             __pad:                          u16,
         },
@@ -899,6 +900,17 @@ pub struct bch_fs_btree_trans {
 
     pub barrier: cs::srcu_struct,
     pub barrier_initialized: bool,
+
+    /*
+     * Transaction admission control: on HDD, limit concurrent btree
+     * transactions to reduce six_lock contention. When too many
+     * transactions compete for the same btree nodes, lock wait times
+     * explode because each transaction holds locks while waiting for
+     * slow HDD IO.
+     */
+    pub throttle: cs::semaphore,
+    pub nr_active: cs::atomic_t,
+    pub throttle_enabled: bool,
 
     pub stats: [cs::btree_transaction_stats; cs::BCH_TRANSACTIONS_NR as usize],
 
