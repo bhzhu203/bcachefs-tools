@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <linux/ioprio.h>
+
 #include "bcachefs.h"
 
 #include "btree/interior.h"
@@ -532,6 +534,7 @@ do_write:
 				&c->btree.bio),
 			    struct btree_write_bio, wbio.bio);
 	wbio_init(&wbio->wbio.bio);
+	wbio->wbio.bio.bi_ioprio	= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 0);
 	wbio->data			= data;
 	wbio->data_bytes		= bytes;
 	wbio->sector_offset		= b->written;
