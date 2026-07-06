@@ -863,7 +863,10 @@ int bch2_trigger_inode(struct btree_trans *trans, struct btree_trigger_op op)
 
 	if ((op.flags & BTREE_TRIGGER_atomic) && (op.flags & BTREE_TRIGGER_insert)) {
 		BUG_ON(!trans->journal_res.seq);
-		bkey_s_to_inode_v3(op.new).v->bi_journal_seq = cpu_to_le64(trans->journal_res.seq);
+		if (op.new.k->type == KEY_TYPE_inode_v3)
+			bkey_s_to_inode_v3(op.new).v->bi_journal_seq = cpu_to_le64(trans->journal_res.seq);
+		else if (op.new.k->type == KEY_TYPE_inode_v2)
+			bkey_s_to_inode_v2(op.new).v->bi_journal_seq = cpu_to_le64(trans->journal_res.seq);
 	}
 
 	s64 nr[1] = { bkey_is_inode(op.new.k) - bkey_is_inode(op.old.k) };
