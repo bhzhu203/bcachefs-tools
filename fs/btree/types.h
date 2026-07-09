@@ -699,6 +699,12 @@ struct btree_trans {
 	bool			begin_may_drop_updates:1;
 	bool			has_interior_updates:1;
 	bool			throttled:1;
+	/*
+	 * Hash bucket in bch_fs_btree_trans.per_proc_slots[] that this
+	 * transaction holds a per-process slot in. Valid iff throttled.
+	 * Used by bch2_trans_put() to decrement the right counter.
+	 */
+	u8			throttle_bucket;
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
 #ifdef CONFIG_BCACHEFS_INJECT_TRANSACTION_RESTARTS
@@ -812,10 +818,20 @@ struct bch_fs_btree_trans {
 	 * transactions compete for the same btree nodes, lock wait times
 	 * explode because each transaction holds locks while waiting for
 	 * slow HDD IO.
+	 *
+	 * Per-process fairness: the fixed-size hash table of atomic
+	 * counters (indexed by task_tgid_vnr) caps each process at
+	 * BTREE_TRANS_PER_PROC_LIMIT slots, so a single heavy-IO process
+	 * (VM with many vCPUs/IO threads) cannot monopolize the global
+	 * pool and starve shell/systemd/journald.
 	 */
 	struct semaphore		throttle;
 	atomic_t			nr_active;
 	bool				throttle_enabled;
+
+#define BTREE_TRANS_PER_PROC_BUCKETS	251	/* prime, collision-tolerant */
+#define BTREE_TRANS_PER_PROC_LIMIT	8	/* max slots per thread group */
+	atomic_t			per_proc_slots[BTREE_TRANS_PER_PROC_BUCKETS];
 
 	struct btree_transaction_stats	stats[BCH_TRANSACTIONS_NR];
 
