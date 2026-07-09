@@ -4012,13 +4012,15 @@ void bch2_trans_throttle_update(struct bch_fs *c)
 	bool is_hdd = !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
 
 	if (is_hdd && !c->btree.trans.throttle_enabled) {
-		sema_init(&c->btree.trans.throttle, 64);
+		sema_init(&c->btree.trans.throttle_fg, 48);
+		sema_init(&c->btree.trans.throttle_bg, 16);
 		for (int i = 0; i < BTREE_TRANS_PER_PROC_BUCKETS; i++)
 			atomic_set(&c->btree.trans.per_proc_slots[i], 0);
 		WRITE_ONCE(c->btree.trans.throttle_enabled, true);
 	} else if (!is_hdd && c->btree.trans.throttle_enabled) {
 		WRITE_ONCE(c->btree.trans.throttle_enabled, false);
-		sema_init(&c->btree.trans.throttle, INT_MAX);
+		sema_init(&c->btree.trans.throttle_fg, INT_MAX);
+		sema_init(&c->btree.trans.throttle_bg, INT_MAX);
 	}
 }
 
@@ -4035,20 +4037,24 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 
 	/*
 	 * Transaction admission control: on HDD, limit concurrent btree
-	 * transactions to reduce six_lock contention. ALL threads (including
-	 * kthreads) must be throttled to prevent livelock where reclaim,
-	 * reconcile, and user transactions all compete for the same btree
-	 * node locks. Only memory reclaim context (PF_MEMALLOC) bypasses
-	 * the throttle to ensure memory reclaim can always make progress.
+	 * transactions to reduce six_lock contention. Two-stage gate:
 	 *
-	 * Two-stage gate:
 	 *   1. Per-process fairness: hash task_tgid_vnr(current) into a
 	 *      fixed-size atomic counter table. Each process (thread group)
 	 *      is capped at BTREE_TRANS_PER_PROC_LIMIT (8) concurrent
-	 *      slots, so a VM with many vCPUs cannot monopolize the global
-	 *      pool and starve shell/systemd/journald.
-	 *   2. Global pool: the semaphore bounds total concurrency on the
-	 *      HDD to prevent six_lock contention explosion.
+	 *      slots, so a VM with many vCPUs cannot monopolize the pool
+	 *      and starve shell/systemd/journald.
+	 *   2. Priority pool:
+	 *      - User processes -> throttle_fg (48 slots on HDD).
+	 *      - PF_WQ_WORKER kworkers (btree_write_complete,
+	 *        write_buffer_flush) -> throttle_bg (16 slots on HDD).
+	 *        Separate pool so they cannot be starved by foreground
+	 *        transactions whose writes they must complete.
+	 *      - PF_KTHREAD (reclaim, reconcile, copygc) bypasses
+	 *        entirely — bringing kthreads under the throttle needs
+	 *        a separate audit of their lock dependencies.
+	 *      - PF_MEMALLOC bypasses entirely — memory reclaim must
+	 *        always make progress.
 	 *
 	 * down_timeout() with retry loop: wait up to 30 seconds per attempt
 	 * for a throttle slot. If timeout expires, yield CPU and retry. We
@@ -4057,9 +4063,18 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	 * trans or a fatal error.
 	 */
 	bool throttled = false;
+	bool throttle_bg = false;
 	unsigned throttle_bucket = 0;
 	if (unlikely(READ_ONCE(c->btree.trans.throttle_enabled))) {
-		if (!(current->flags & (PF_MEMALLOC|PF_WQ_WORKER))) {
+		if (!(current->flags & PF_KTHREAD) ||
+		    (current->flags & PF_WQ_WORKER)) {
+			/* Admitted: user processes and wq workers.
+			 * Not admitted: pure kthreads (PF_KTHREAD &&
+			 * !PF_WQ_WORKER) and PF_MEMALLOC. */
+			if (current->flags & PF_MEMALLOC)
+				goto skip_throttle;
+
+			throttle_bg = (current->flags & PF_WQ_WORKER) != 0;
 			throttle_bucket = (unsigned)task_tgid_vnr(current)
 						% BTREE_TRANS_PER_PROC_BUCKETS;
 			atomic_t *slot = &c->btree.trans.per_proc_slots[throttle_bucket];
@@ -4072,8 +4087,11 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 				cond_resched();
 			}
 
-			/* Stage 2: acquire global slot */
-			while (down_timeout(&c->btree.trans.throttle, 30 * HZ)) {
+			/* Stage 2: acquire pool slot */
+			struct semaphore *pool = throttle_bg
+				? &c->btree.trans.throttle_bg
+				: &c->btree.trans.throttle_fg;
+			while (down_timeout(pool, 30 * HZ)) {
 				if (test_bit(BCH_FS_stopping, &c->flags)) {
 					atomic_dec(slot);
 					return ERR_PTR(-EROFS);
@@ -4084,6 +4102,7 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 			throttled = true;
 		}
 	}
+skip_throttle:
 
 	struct btree_trans *trans = bch2_trans_alloc(c);
 
@@ -4104,6 +4123,7 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	trans->fn_idx		= fn_idx;
 	trans->locking_wait.task = current;
 	trans->throttled	= throttled;
+	trans->throttle_bg	= throttle_bg;
 	trans->throttle_bucket	= (u8)throttle_bucket;
 	trans->journal_replay_not_finished =
 		unlikely(!test_bit(JOURNAL_replay_done, &c->journal.flags)) &&
@@ -4219,8 +4239,11 @@ void bch2_trans_put(struct btree_trans *trans)
 	bch2_trans_unlock_long(trans);
 
 	if (unlikely(trans->throttled)) {
+		struct semaphore *pool = trans->throttle_bg
+			? &c->btree.trans.throttle_bg
+			: &c->btree.trans.throttle_fg;
 		atomic_dec(&c->btree.trans.nr_active);
-		up(&c->btree.trans.throttle);
+		up(pool);
 		atomic_dec(&c->btree.trans.per_proc_slots[trans->throttle_bucket]);
 	}
 
@@ -4462,7 +4485,8 @@ void bch2_fs_btree_iter_init_early(struct bch_fs *c)
 	 * Transaction throttle: start disabled (large count). Will be enabled
 	 * after device detection if HDD is found.
 	 */
-	sema_init(&c->btree.trans.throttle, INT_MAX);
+	sema_init(&c->btree.trans.throttle_fg, INT_MAX);
+	sema_init(&c->btree.trans.throttle_bg, INT_MAX);
 	atomic_set(&c->btree.trans.nr_active, 0);
 	c->btree.trans.throttle_enabled = false;
 }
