@@ -552,10 +552,13 @@ static bool can_write_now(struct bch_fs *c, unsigned replicas_want, struct closu
 	 * On HDD, btree writes are seek-limited and mq-deadline does not honor
 	 * write ioprio, so throttle data writeback more aggressively to ensure
 	 * btree writes complete and free journal pins (preventing journal_max_open).
+	 * But keep the HDD threshold at limit/2 (not lower) — too aggressive
+	 * throttling caused single-process heavy-IO workloads (VM startup) to
+	 * stall and accumulate dirty pages that later triggered system-wide stalls.
 	 */
 	bool is_hdd = !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
 	unsigned in_flight_limit = is_hdd
-		? BTREE_WRITE_IO_LIMIT(c) / 4
+		? BTREE_WRITE_IO_LIMIT(c) / 2
 		: BTREE_WRITE_IO_LIMIT(c) * 3 / 4;
 
 	if (atomic_long_read(&c->btree.cache.nr_in_flight_inner) > in_flight_limit) {
@@ -563,11 +566,13 @@ static bool can_write_now(struct bch_fs *c, unsigned replicas_want, struct closu
 		return false;
 	}
 
-	/* On HDD, also throttle when dirty btree nodes exceed half the cache:
-	 * writes are accumulating faster than the device can flush them. */
+	/* On HDD, also throttle when dirty btree nodes exceed 75% of the cache:
+	 * writes are accumulating faster than the device can flush them. 50% was
+	 * too eager — normal bursts (VM startup, large file creation) routinely
+	 * crossed it and paused writeback unnecessarily. */
 	if (is_hdd &&
-	    btree_cache_nr_dirty(&c->btree.cache) * 2 >
-	    btree_cache_nr_live(&c->btree.cache)) {
+	    btree_cache_nr_dirty(&c->btree.cache) * 4 >
+	    btree_cache_nr_live(&c->btree.cache) * 3) {
 		closure_wait(&c->btree.cache.nr_in_flight_wait, cl);
 		return false;
 	}

@@ -168,14 +168,16 @@ static inline unsigned btree_blocks(const struct bch_fs *c)
 
 /*
  * Btree write IO limit: maximum number of in-flight btree node writes.
- * On SSD, 64 provides good parallelism. On HDD, a lower limit (16) reduces
- * lock contention because each in-flight write holds btree node locks until
- * the IO completes, and HDD IO is slow (ms vs us).
+ * On SSD, 64 provides good parallelism. On HDD, 32 balances lock contention
+ * (each in-flight write holds btree node locks until IO completes, and HDD IO
+ * is ms-scale) against writeback throughput — setting it too low (e.g. 16)
+ * caused data writeback to be throttled excessively during single-process
+ * heavy-IO workloads like VM startup, leading to system-wide disksleep.
  */
 static inline unsigned btree_write_io_limit(struct bch_fs *c)
 {
 	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
-		return 16;
+		return 32;
 	return 64;
 }
 
