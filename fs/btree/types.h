@@ -845,7 +845,9 @@ struct bch_fs_btree_trans {
 	 *
 	 * Per-process fairness: the fixed-size hash table of atomic
 	 * counters (indexed by task_tgid_vnr) caps each process at
-	 * BTREE_TRANS_PER_PROC_LIMIT slots, so a single heavy-IO process
+	 * c->opts.trans_per_proc_limit slots (default
+	 * BTREE_TRANS_PER_PROC_LIMIT = 8, tunable via the sysfs
+	 * trans_per_proc_limit option), so a single heavy-IO process
 	 * (VM with many vCPUs/IO threads) cannot monopolize either pool
 	 * and starve shell/systemd/journald.
 	 */
@@ -855,7 +857,7 @@ struct bch_fs_btree_trans {
 	bool				throttle_enabled;
 
 #define BTREE_TRANS_PER_PROC_BUCKETS	251	/* prime, collision-tolerant */
-#define BTREE_TRANS_PER_PROC_LIMIT	8	/* max slots per thread group */
+#define BTREE_TRANS_PER_PROC_LIMIT	8	/* default per-process cap */
 	atomic_t			per_proc_slots[BTREE_TRANS_PER_PROC_BUCKETS];
 
 	struct btree_transaction_stats	stats[BCH_TRANSACTIONS_NR];
