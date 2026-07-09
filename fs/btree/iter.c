@@ -4002,14 +4002,17 @@ static inline struct btree_trans *bch2_trans_alloc(struct bch_fs *c)
  * On HDD, limiting concurrent btree transactions reduces six_lock contention:
  * fewer transactions means fewer competing for the same btree node locks, and
  * each transaction holds locks for shorter time (less IO wait). The limit is
- * set to 8 to prevent livelock under heavy concurrent workloads.
+ * set to 64 — high enough that a single heavy-IO process (e.g. a VM with many
+ * vCPUs/IO threads) cannot monopolize all slots and starve other user
+ * processes, but low enough to bound lock contention under multi-workload
+ * concurrency.
  */
 void bch2_trans_throttle_update(struct bch_fs *c)
 {
 	bool is_hdd = !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX);
 
 	if (is_hdd && !c->btree.trans.throttle_enabled) {
-		sema_init(&c->btree.trans.throttle, 32);
+		sema_init(&c->btree.trans.throttle, 64);
 		WRITE_ONCE(c->btree.trans.throttle_enabled, true);
 	} else if (!is_hdd && c->btree.trans.throttle_enabled) {
 		WRITE_ONCE(c->btree.trans.throttle_enabled, false);
