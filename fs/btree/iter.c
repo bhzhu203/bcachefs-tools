@@ -3992,9 +3992,9 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	 *
 	 *   1. Per-process fairness: hash task_tgid_vnr(current) into a
 	 *      fixed-size atomic counter table. Each process (thread group)
-	 *      is capped at BTREE_TRANS_PER_PROC_LIMIT (8) concurrent
-	 *      slots, so a VM with many vCPUs cannot monopolize the pool
-	 *      and starve shell/systemd/journald.
+	 *      is capped at c->opts.trans_per_proc_limit (default 8,
+	 *      tunable via sysfs) concurrent slots, so a VM with many vCPUs
+	 *      cannot monopolize the pool and starve shell/systemd/journald.
 	 *   2. Priority pool:
 	 *      - User processes -> throttle_fg (48 slots on HDD).
 	 *      - PF_WQ_WORKER kworkers (btree_write_complete,
@@ -4029,10 +4029,10 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 			throttle_bucket = (unsigned)task_tgid_vnr(current)
 						% BTREE_TRANS_PER_PROC_BUCKETS;
 			atomic_t *slot = &c->btree.trans.per_proc_slots[throttle_bucket];
+			unsigned per_proc_limit = READ_ONCE(c->opts.trans_per_proc_limit);
 
 			/* Stage 1: wait for per-process slot */
-			while (!atomic_add_unless(slot, 1,
-						  BTREE_TRANS_PER_PROC_LIMIT)) {
+			while (!atomic_add_unless(slot, 1, per_proc_limit)) {
 				if (test_bit(BCH_FS_stopping, &c->flags))
 					return ERR_PTR(-EROFS);
 				cond_resched();
