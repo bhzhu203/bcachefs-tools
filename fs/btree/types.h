@@ -700,6 +700,13 @@ struct btree_trans {
 	bool			has_interior_updates:1;
 	bool			throttled:1;
 	/*
+	 * Which throttle pool this transaction acquired a slot from.
+	 * false = foreground pool (user processes); true = background
+	 * pool (PF_WQ_WORKER kworkers). Valid iff throttled. Used by
+	 * bch2_trans_put() to up() the right semaphore.
+	 */
+	bool			throttle_bg:1;
+	/*
 	 * Hash bucket in bch_fs_btree_trans.per_proc_slots[] that this
 	 * transaction holds a per-process slot in. Valid iff throttled.
 	 * Used by bch2_trans_put() to decrement the right counter.
@@ -819,13 +826,25 @@ struct bch_fs_btree_trans {
 	 * explode because each transaction holds locks while waiting for
 	 * slow HDD IO.
 	 *
+	 * Two priority pools:
+	 *   - throttle_fg (48 slots on HDD): user processes (VMs, shell,
+	 *     applications). Gets the majority of slots since foreground
+	 *     IO is what users wait on.
+	 *   - throttle_bg (16 slots on HDD): PF_WQ_WORKER kworkers
+	 *     (btree_write_complete, write_buffer_flush). Separate pool
+	 *     so kworkers cannot be starved by foreground transactions
+	 *     they need to service (that was the original deadlock that
+	 *     forced PF_WQ_WORKER to bypass the throttle entirely).
+	 *     PF_KTHREAD (reclaim, reconcile) still bypasses both.
+	 *
 	 * Per-process fairness: the fixed-size hash table of atomic
 	 * counters (indexed by task_tgid_vnr) caps each process at
 	 * BTREE_TRANS_PER_PROC_LIMIT slots, so a single heavy-IO process
-	 * (VM with many vCPUs/IO threads) cannot monopolize the global
-	 * pool and starve shell/systemd/journald.
+	 * (VM with many vCPUs/IO threads) cannot monopolize either pool
+	 * and starve shell/systemd/journald.
 	 */
-	struct semaphore		throttle;
+	struct semaphore		throttle_fg;
+	struct semaphore		throttle_bg;
 	atomic_t			nr_active;
 	bool				throttle_enabled;
 
