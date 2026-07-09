@@ -635,7 +635,15 @@ enum fsck_err_opts {
 	  OPT_UINT(1, 25),						\
 	  BCH_SB_EXT_EC_STRIPE_BUF_LIMIT,	5,			\
 	  "%",		"Maximum percentage of total RAM for in-flight\n"\
-	  " EC stripe buffers")
+	  " EC stripe buffers")					\
+	x(trans_per_proc_limit,		u32,				\
+	  OPT_FS|OPT_MOUNT|OPT_RUNTIME|OPT_NODOC,			\
+	  OPT_UINT(1, 128),						\
+	  BCH2_NO_SB_OPT,		8,				\
+	  "slots",	"Per-process cap on concurrent btree transaction\n"\
+	  " slots on HDD. A single process (thread group) cannot hold\n"\
+	  " more than this many slots regardless of how many threads\n"\
+	  " it has, so one heavy-IO process cannot starve others.")
 
 enum bch_opt_id {
 #define x(_name, ...)	Opt_##_name,
