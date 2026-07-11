@@ -331,7 +331,7 @@ insert:
 			.size			= max_t(size_t, keys->size, 8) * 2,
 		};
 
-		new_keys.data = bch2_kvmalloc(new_keys.size * sizeof(new_keys.data[0]), GFP_KERNEL);
+		new_keys.data = bch2_kvmalloc(new_keys.size * sizeof(new_keys.data[0]), GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (!new_keys.data) {
 			bch_err(c, "%s: error allocating new key array (size %zu)",
 				__func__, new_keys.size);

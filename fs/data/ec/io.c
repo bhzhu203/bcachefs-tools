@@ -176,7 +176,7 @@ int bch2_ec_stripe_buf_init(struct bch_fs *c,
 	buf->size	= end - offset;
 
 	for (unsigned i = 0; i < buf->key.v.nr_blocks; i++) {
-		buf->data[i] = kvmalloc(buf->size << 9, GFP_KERNEL);
+		buf->data[i] = kvmalloc(buf->size << 9, GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (!buf->data[i]) {
 			bch2_ec_stripe_buf_exit(buf);
 			buf->c = NULL;
