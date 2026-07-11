@@ -779,7 +779,7 @@ static void journal_buf_prealloc(struct journal *j)
 	unsigned buf_size = j->buf_size_want;
 
 	spin_unlock(&j->lock);
-	void *buf = kvmalloc(buf_size, GFP_NOIO);
+	void *buf = kvmalloc(buf_size, GFP_NOIO|__GFP_RECLAIMABLE);
 	spin_lock(&j->lock);
 
 	if (!buf)
