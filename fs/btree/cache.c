@@ -220,14 +220,16 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 				   gfp_t gfp, bool avoid_compaction)
 {
 	/*
-	 * Use __GFP_RECLAIMABLE for kmalloc'd btree node data so the pages
+	 * Use __GFP_RECLAIMABLE for all btree node data allocations so pages
 	 * land in MIGRATE_RECLAIMABLE pageblocks instead of MIGRATE_UNMOVABLE.
 	 * This allows kcompactd0 to reclaim btree cache pages via the existing
 	 * shrinker when contiguous memory is needed, instead of treating them
 	 * as immovable obstacles that cause compaction failures.
 	 *
-	 * vmalloc does not support __GFP_RECLAIMABLE, so the vmalloc fallback
-	 * paths omit it.
+	 * __GFP_RECLAIMABLE works with both kmalloc (compound pages) and
+	 * vmalloc (individual pages): each page is placed in a
+	 * MIGRATE_RECLAIMABLE pageblock, and the btree cache shrinker can
+	 * free entire nodes (calling vfree) when kcompactd triggers reclaim.
 	 */
 	gfp |= __GFP_ACCOUNT;
 	gfp_t gfp_reclaimable = gfp | __GFP_RECLAIMABLE;
@@ -241,25 +243,26 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 			 * we spend blocked on compaction, even if we specified a
 			 * vmalloc fallback.
 			 *
-			 * So we have to do that ourselves: only try for a high order
-			 * page allocation if we're GFP_NOWAIT, otherwise straight to
-			 * vmalloc.
+			 * Try kmalloc with __GFP_NORETRY first: this prevents the
+			 * allocator from invoking expensive compaction for this
+			 * high-order allocation, while __GFP_RECLAIMABLE ensures
+			 * the compound pages are reclaimable by kcompactd.  If
+			 * kmalloc fails without compaction, fall back to vmalloc
+			 * (also with __GFP_RECLAIMABLE).
 			 */
-			b->data = gfp & __GFP_RECLAIM
-				? __vmalloc(bytes, gfp)
-				: kmalloc(bytes, gfp_reclaimable);
+			b->data = kmalloc(bytes, gfp_reclaimable | __GFP_NORETRY);
+			if (!b->data)
+				b->data = __vmalloc(bytes, gfp_reclaimable);
 		}
 		/*
 		 * mm is cursed: vmalloc can fail for no sane reason, even on 64
 		 * bit machines, so - fall back to the page allocator if that
-		 * fails.  Try kmalloc with __GFP_RECLAIMABLE first (keeps pages
-		 * in reclaimable pageblocks), then vmalloc as last resort.
+		 * fails.
 		 */
-
 		if (!b->data)
 			b->data = kmalloc(bytes, gfp_reclaimable);
 		if (!b->data)
-			b->data = __vmalloc(bytes, gfp);
+			b->data = __vmalloc(bytes, gfp_reclaimable);
 		if (!b->data)
 			return bch_err_throw(c, ENOMEM_btree_node_mem_alloc);
 	}
@@ -268,7 +271,7 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 		unsigned bytes = __btree_aux_data_bytes(b->byte_order);
 
 #ifdef __KERNEL__
-		b->aux_data = kvmalloc(bytes, gfp);
+		b->aux_data = kvmalloc(bytes, gfp_reclaimable);
 #else
 		b->aux_data = mmap(NULL, bytes,
 				   PROT_READ|PROT_WRITE|PROT_EXEC,

@@ -195,7 +195,7 @@ static void journal_buf_realloc(struct journal *j, struct journal_buf *buf)
 	if (bch2_btree_write_buffer_resize(c, btree_write_buffer_size))
 		return;
 
-	new_buf = kvmalloc(new_size, GFP_NOIO|__GFP_NOWARN);
+	new_buf = kvmalloc(new_size, GFP_NOIO|__GFP_NOWARN|__GFP_RECLAIMABLE);
 	if (!new_buf)
 		return;
 
