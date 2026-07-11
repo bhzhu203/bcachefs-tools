@@ -220,11 +220,17 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 				   gfp_t gfp, bool avoid_compaction)
 {
 	/*
-	 * We probably ought to be using __GFP_RECLAIMABLE - but vmalloc barfs.
+	 * Use __GFP_RECLAIMABLE for kmalloc'd btree node data so the pages
+	 * land in MIGRATE_RECLAIMABLE pageblocks instead of MIGRATE_UNMOVABLE.
+	 * This allows kcompactd0 to reclaim btree cache pages via the existing
+	 * shrinker when contiguous memory is needed, instead of treating them
+	 * as immovable obstacles that cause compaction failures.
 	 *
-	 * Shrinkable memory accounting is fubar.
+	 * vmalloc does not support __GFP_RECLAIMABLE, so the vmalloc fallback
+	 * paths omit it.
 	 */
 	gfp |= __GFP_ACCOUNT;
+	gfp_t gfp_reclaimable = gfp | __GFP_RECLAIMABLE;
 
 	if (!b->data) {
 		unsigned bytes = 1U << b->byte_order;
@@ -241,16 +247,19 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 			 */
 			b->data = gfp & __GFP_RECLAIM
 				? __vmalloc(bytes, gfp)
-				: kmalloc(bytes, gfp);
+				: kmalloc(bytes, gfp_reclaimable);
 		}
 		/*
 		 * mm is cursed: vmalloc can fail for no sane reason, even on 64
 		 * bit machines, so - fall back to the page allocator if that
-		 * fails
+		 * fails.  Try kmalloc with __GFP_RECLAIMABLE first (keeps pages
+		 * in reclaimable pageblocks), then vmalloc as last resort.
 		 */
 
 		if (!b->data)
-			b->data = kvmalloc(bytes, gfp);
+			b->data = kmalloc(bytes, gfp_reclaimable);
+		if (!b->data)
+			b->data = __vmalloc(bytes, gfp);
 		if (!b->data)
 			return bch_err_throw(c, ENOMEM_btree_node_mem_alloc);
 	}
