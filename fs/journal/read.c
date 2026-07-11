@@ -275,7 +275,7 @@ static int journal_entry_add(struct bch_fs *c, struct bch_dev *ca,
 			return 0;
 	}
 
-	i = kvmalloc(offsetof(struct journal_replay, j) + bytes, GFP_KERNEL);
+	i = kvmalloc(offsetof(struct journal_replay, j) + bytes, GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!i)
 		return bch_err_throw(c, ENOMEM_journal_entry_add);
 
@@ -307,7 +307,7 @@ static int journal_read_buf_realloc(struct bch_fs *c, struct journal_read_buf *b
 				    size_t new_size)
 {
 	new_size = roundup_pow_of_two(new_size);
-	void *n = kvmalloc(new_size, GFP_KERNEL);
+	void *n = kvmalloc(new_size, GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!n)
 		return bch_err_throw(c, ENOMEM_journal_read_buf_realloc);
 

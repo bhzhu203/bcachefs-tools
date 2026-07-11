@@ -115,7 +115,7 @@ found:
 	size_t bytes = bkey_is_btree_ptr(extent.k)
 		? c->opts.btree_node_size
 		: p.crc.compressed_size << 9;
-	void *data_buf __free(kvfree) = kvmalloc(bytes, GFP_KERNEL);
+	void *data_buf __free(kvfree) = kvmalloc(bytes, GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!data_buf) {
 		enumerated_ref_put(&ca->io_ref[READ],
 				   BCH_DEV_READ_REF_check_extent_checksums);
