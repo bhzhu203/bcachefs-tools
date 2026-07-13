@@ -766,15 +766,6 @@ static unsigned long bch2_btree_cache_scan(struct shrinker *shrink,
 		nr = can_free;
 	}
 
-	/*
-	 * On HDD, keep more btree nodes in cache: cache misses are expensive
-	 * (seek latency) and transactions hold locks while waiting for IO,
-	 * increasing contention. Reduce eviction pressure to keep hot nodes
-	 * in memory. Bypass under extreme memory pressure.
-	 */
-	if (!under_pressure && !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
-		nr = (nr + 1) / 2;
-
 	unsigned i = 0;
 	list_for_each_entry_safe(b, t, &bc->freeable, list) {
 		/*
@@ -852,9 +843,6 @@ static unsigned long bch2_btree_cache_count(struct shrinker *shrink,
 					    struct shrink_control *sc)
 {
 	struct btree_cache_list *list = shrink->private_data;
-	struct bch_fs_btree_cache *bc =
-		container_of(list, struct bch_fs_btree_cache, live[list->idx]);
-	struct bch_fs *c = container_of(bc, struct bch_fs, btree.cache);
 
 	if (static_branch_unlikely(&bch2_btree_shrinker_disabled))
 		return 0;
@@ -862,13 +850,16 @@ static unsigned long bch2_btree_cache_count(struct shrinker *shrink,
 	unsigned long can_free = btree_cache_can_free(list);
 
 	/*
-	 * On HDD, report fewer reclaimable objects to reduce shrinker pressure.
-	 * Bypass under extreme memory pressure.
+	 * Report the full reclaimable count to kcompactd, even on HDD.
+	 * Previously we halved the count on HDD to reduce shrinker pressure
+	 * and protect cache from aggressive eviction. However, this caused
+	 * kcompactd to scan billions of pages without reclaiming enough
+	 * btree nodes, leading to high CPU usage and compaction failures.
+	 *
+	 * With __GFP_RECLAIMABLE btree nodes, kcompactd needs an accurate
+	 * count to reclaim contiguous pageblocks efficiently. The "second
+	 * chance" logic in scan() still protects hot interior nodes on HDD.
 	 */
-	if ((sc->gfp_mask & __GFP_IO) &&
-	    !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
-		can_free = (can_free + 1) / 2;
-
 	return can_free;
 }
 
@@ -1039,9 +1030,9 @@ struct btree *bch2_btree_node_mem_alloc(struct btree_trans *trans, bool pcpu_rea
 	}
 
 	struct btree_node_bufs bufs = { .byte_order = ilog2(c->opts.btree_node_size) };
-	if (__btree_node_data_alloc(c, &bufs, GFP_NOWAIT, true)) {
+	if (__btree_node_data_alloc(c, &bufs, GFP_NOWAIT)) {
 		bch2_trans_unlock(trans);
-		if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL|__GFP_NOWARN, true)) {
+		if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL|__GFP_NOWARN)) {
 			btree_node_bufs_free(&bufs);
 			goto err;
 		}
