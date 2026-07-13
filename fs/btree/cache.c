@@ -106,10 +106,6 @@
 #include <linux/sched/mm.h>
 #include <linux/swap.h>
 
-bool bch2_mm_avoid_compaction = true;
-module_param_named(mm_avoid_compaction, bch2_mm_avoid_compaction, bool, 0644);
-MODULE_PARM_DESC(force_read_device, "");
-
 const char * const bch2_btree_node_flags[] = {
 	"typebit",
 	"typebit",
@@ -217,19 +213,21 @@ static const struct rhashtable_params bch_btree_cache_params = {
 };
 
 static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
-				   gfp_t gfp, bool avoid_compaction)
+				   gfp_t gfp)
 {
 	/*
-	 * Use __GFP_RECLAIMABLE for all btree node data allocations so pages
+	 * Use __GFP_RECLAIMABLE for btree node data allocations so pages
 	 * land in MIGRATE_RECLAIMABLE pageblocks instead of MIGRATE_UNMOVABLE.
-	 * This allows kcompactd0 to reclaim btree cache pages via the existing
-	 * shrinker when contiguous memory is needed, instead of treating them
-	 * as immovable obstacles that cause compaction failures.
+	 * This allows kcompactd to reclaim btree cache pages via the shrinker
+	 * when contiguous memory is needed.
 	 *
-	 * __GFP_RECLAIMABLE works with both kmalloc (compound pages) and
-	 * vmalloc (individual pages): each page is placed in a
-	 * MIGRATE_RECLAIMABLE pageblock, and the btree cache shrinker can
-	 * free entire nodes (calling vfree) when kcompactd triggers reclaim.
+	 * Always try kmalloc first with __GFP_NORETRY to avoid compaction
+	 * latency and deadlocks (we hold btree locks). If kmalloc fails,
+	 * fall back to __vmalloc. Note: __vmalloc does NOT support
+	 * __GFP_RECLAIMABLE in kernels < 6.18, so vmalloc pages land in
+	 * MIGRATE_MOVABLE/UNMOVABLE pageblocks and are not reclaimable.
+	 * This is a known limitation; the shrinker must be aggressive
+	 * enough to free kmalloc'd pages before vmalloc is needed.
 	 */
 	gfp |= __GFP_ACCOUNT;
 	gfp_t gfp_reclaimable = gfp | __GFP_RECLAIMABLE;
@@ -237,32 +235,21 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 	if (!b->data) {
 		unsigned bytes = 1U << b->byte_order;
 
-		if (avoid_compaction && bch2_mm_avoid_compaction) {
-			/*
-			 * Cursed hack: mm doesn't know how to limit the amount of time
-			 * we spend blocked on compaction, even if we specified a
-			 * vmalloc fallback.
-			 *
-			 * Try kmalloc with __GFP_NORETRY first: this prevents the
-			 * allocator from invoking expensive compaction for this
-			 * high-order allocation, while __GFP_RECLAIMABLE ensures
-			 * the compound pages are reclaimable by kcompactd.  If
-			 * kmalloc fails without compaction, fall back to vmalloc
-			 * (also with __GFP_RECLAIMABLE).
-			 */
-			b->data = kmalloc(bytes, gfp_reclaimable | __GFP_NORETRY);
-			if (!b->data)
-				b->data = __vmalloc(bytes, gfp_reclaimable);
-		}
 		/*
-		 * mm is cursed: vmalloc can fail for no sane reason, even on 64
-		 * bit machines, so - fall back to the page allocator if that
-		 * fails.
+		 * Try kmalloc with __GFP_NORETRY: this prevents the allocator
+		 * from invoking expensive compaction (which would deadlock
+		 * since we hold btree locks), while __GFP_RECLAIMABLE ensures
+		 * the compound pages are reclaimable by kcompactd.
 		 */
-		if (!b->data)
-			b->data = kmalloc(bytes, gfp_reclaimable);
-		if (!b->data)
-			b->data = __vmalloc(bytes, gfp_reclaimable);
+		b->data = kmalloc(bytes, gfp_reclaimable | __GFP_NORETRY);
+		if (!b->data) {
+			/*
+			 * kmalloc failed (memory fragmentation or pressure).
+			 * Fall back to __vmalloc without __GFP_RECLAIMABLE
+			 * since vmalloc doesn't support it in kernels < 6.18.
+			 */
+			b->data = __vmalloc(bytes, gfp);
+		}
 		if (!b->data)
 			return bch_err_throw(c, ENOMEM_btree_node_mem_alloc);
 	}
@@ -305,7 +292,7 @@ struct btree *__bch2_btree_node_mem_alloc(struct bch_fs *c)
 	struct btree_node_bufs bufs = { .byte_order = ilog2(c->opts.btree_node_size) };
 	struct btree *b;
 
-	if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL, false) ||
+	if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL) ||
 	    !(b = __btree_node_mem_alloc(c, false, GFP_KERNEL))) {
 		btree_node_bufs_free(&bufs);
 		return NULL;
