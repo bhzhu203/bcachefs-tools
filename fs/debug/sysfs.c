@@ -193,6 +193,8 @@ read_attribute(congested);
 
 read_attribute(btree_write_stats);
 
+rw_attribute(btree_cache_shrinker_seeks);
+
 read_attribute(btree_cache_size);
 read_attribute(compression_stats);
 read_attribute(errors);
@@ -328,6 +330,11 @@ SHOW(bch2_fs)
 
 	sysfs_hprint(btree_cache_size,		bch2_btree_cache_size(c));
 
+	if (attr == &sysfs_btree_cache_shrinker_seeks) {
+		struct bch_fs_btree_cache *bc = &c->btree.cache;
+		prt_printf(out, "%lu\n", bc->live[0].shrink->seeks);
+	}
+
 	if (attr == &sysfs_btree_write_stats)
 		bch2_btree_write_stats_to_text(out, c);
 
@@ -448,6 +455,17 @@ STORE(bch2_fs)
 		bc->live[0].shrink->scan_objects(bc->live[0].shrink, &sc);
 	}
 
+	if (attr == &sysfs_btree_cache_shrinker_seeks) {
+		struct bch_fs_btree_cache *bc = &c->btree.cache;
+		unsigned long seeks = strtoul_or_return(buf);
+
+		if (seeks < 1 || seeks > 100)
+			return -EINVAL;
+
+		bc->live[0].shrink->seeks = seeks;
+		bc->live[1].shrink->seeks = seeks;
+	}
+
 	if (attr == &sysfs_trigger_btree_key_cache_shrink) {
 		struct shrink_control sc;
 
@@ -538,6 +556,7 @@ SYSFS_OPS(bch2_fs);
 struct attribute *bch2_fs_files[] = {
 	&sysfs_minor,
 	&sysfs_btree_cache_size,
+	&sysfs_btree_cache_shrinker_seeks,
 	&sysfs_btree_write_stats,
 
 	&sysfs_reconcile_status,
