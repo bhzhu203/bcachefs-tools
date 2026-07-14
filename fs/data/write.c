@@ -1677,7 +1677,7 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 
 	if (unlikely(bio->bi_iter.bi_size < required))
 		__bch2_bio_alloc_pages_pool(c, bio, c->opts.block_size, required,
-					    GFP_NOIO|__GFP_SKIP_ZERO);
+					    GFP_NOIO|__GFP_SKIP_ZERO|__GFP_NORETRY);
 
 	return bio;
 }

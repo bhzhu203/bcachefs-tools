@@ -124,11 +124,11 @@ struct bbuf bch2_bounce_alloc(struct bch_fs *c, unsigned size, int rw)
 	 * The mempool fallback below is not flagged: mempool reuse returns
 	 * elements without re-zeroing, so it never pays the init_on_alloc cost.
 	 */
-	b = kmalloc(size, GFP_NOIO|__GFP_NOWARN|__GFP_SKIP_ZERO);
+	b = kmalloc(size, GFP_NOIO|__GFP_NOWARN|__GFP_SKIP_ZERO|__GFP_RECLAIMABLE|__GFP_NORETRY);
 	if (b)
 		return (struct bbuf) { .c = c, .b = b, .type = BB_kmalloc, .rw = rw };
 
-	b = mempool_alloc(&c->compress.bounce[rw], GFP_NOIO);
+	b = mempool_alloc(&c->compress.bounce[rw], GFP_NOIO|__GFP_NORETRY);
 	if (b)
 		return (struct bbuf) { .c = c, .b = b, .type = BB_mempool, .rw = rw };
 
@@ -204,7 +204,7 @@ static struct bbuf __bch2_bio_map_or_bounce(struct bch_fs *c, struct bio *bio,
 
 	struct page *stack_pages[16];
 	struct page **pages = nr_pages > ARRAY_SIZE(stack_pages)
-		? kmalloc_array(nr_pages, sizeof(struct page *), GFP_NOIO)
+		? kmalloc_array(nr_pages, sizeof(struct page *), GFP_NOIO|__GFP_NORETRY)
 		: stack_pages;
 	if (!pages)
 		return bch2_bio_bounce(c, bio, start, rw);
@@ -277,7 +277,7 @@ int bch2_buf_uncompress(struct bch_fs *c,
 			.avail_out	= dst_len,
 		};
 
-		void *workspace = mempool_alloc(workspace_pool, GFP_NOIO);
+		void *workspace = mempool_alloc(workspace_pool, GFP_NOIO|__GFP_NORETRY);
 
 		zlib_set_workspace(&strm, workspace);
 		zlib_inflateInit2(&strm, -MAX_WBITS);
@@ -298,7 +298,7 @@ int bch2_buf_uncompress(struct bch_fs *c,
 		if (real_src_len > src_len - 4)
 			return bch_err_throw(c, decompress_zstd_src_len_bad);
 
-		void *workspace = mempool_alloc(workspace_pool, GFP_NOIO);
+		void *workspace = mempool_alloc(workspace_pool, GFP_NOIO|__GFP_NORETRY);
 		ctx = zstd_init_dctx(workspace, zstd_dctx_workspace_bound());
 
 		size_t ret = zstd_decompress_dctx(ctx,
@@ -505,7 +505,7 @@ static unsigned bch2_compress(struct bch_fs *c,
 		}
 	}
 
-	void *workspace = mempool_alloc(workspace_pool, GFP_NOIO);
+	void *workspace = mempool_alloc(workspace_pool, GFP_NOIO|__GFP_NORETRY);
 
 	/*
 	 * XXX: this algorithm sucks when the compression code doesn't tell us

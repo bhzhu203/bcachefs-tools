@@ -3700,9 +3700,9 @@ void *__bch2_trans_kmalloc(struct btree_trans *trans, size_t size, unsigned long
 
 	bool lock_dropped = false;
 	new_mem = allocate_dropping_locks_norelock(trans, lock_dropped,
-					kmalloc(new_bytes, _gfp|__GFP_NOWARN));
+					kmalloc(new_bytes, _gfp|__GFP_NOWARN|__GFP_NORETRY));
 	if (!new_mem) {
-		new_mem = mempool_alloc(&c->btree.trans.malloc_pool, GFP_KERNEL);
+		new_mem = mempool_alloc(&c->btree.trans.malloc_pool, GFP_KERNEL|__GFP_NORETRY);
 		new_bytes = BTREE_TRANS_MEM_MAX;
 		trans->used_mempool = true;
 	}
@@ -3802,11 +3802,11 @@ u32 bch2_trans_begin(struct btree_trans *trans)
 
 		bool lock_dropped = false;
 		void *new_mem = allocate_dropping_locks_norelock(trans, lock_dropped,
-					krealloc(trans->mem, new_bytes, _gfp));
+					krealloc(trans->mem, new_bytes, _gfp|__GFP_NORETRY));
 		(void)lock_dropped;
 
 		if (!new_mem) {
-			new_mem = mempool_alloc(&trans->c->btree.trans.malloc_pool, GFP_KERNEL);
+			new_mem = mempool_alloc(&trans->c->btree.trans.malloc_pool, GFP_KERNEL|__GFP_NORETRY);
 			new_bytes = BTREE_TRANS_MEM_MAX;
 			trans->used_mempool = true;
 			kfree(trans->mem);
@@ -4101,7 +4101,7 @@ skip_throttle:
 		if (s->max_mem) {
 			unsigned expected_mem_bytes = roundup_pow_of_two(s->max_mem);
 
-			trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL|__GFP_NOWARN);
+			trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL|__GFP_NOWARN|__GFP_NORETRY);
 			if (likely(trans->mem))
 				trans->mem_bytes = expected_mem_bytes;
 		}
