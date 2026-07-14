@@ -266,7 +266,7 @@ void *bch2_btree_bounce_alloc_noprof(struct bch_fs *c, size_t size, bool *used_m
 #endif
 	if (!p) {
 		*used_mempool = true;
-		p = mempool_alloc_noprof(&c->btree.bounce_pool, GFP_NOIO|__GFP_ACCOUNT|__GFP_RECLAIMABLE);
+		p = mempool_alloc_noprof(&c->btree.bounce_pool, GFP_NOIO|__GFP_ACCOUNT|__GFP_RECLAIMABLE|__GFP_NORETRY);
 	}
 	return p;
 }
