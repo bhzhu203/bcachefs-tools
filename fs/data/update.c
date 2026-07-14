@@ -989,7 +989,7 @@ static int bch2_data_update_bios_init(struct data_update *m, struct bch_fs *c,
 
 	unsigned nr_vecs = DIV_ROUND_UP(buf_bytes, PAGE_SIZE);
 
-	m->bvecs = kmalloc_array(nr_vecs, sizeof*(m->bvecs), GFP_KERNEL);
+	m->bvecs = kmalloc_array(nr_vecs, sizeof*(m->bvecs), GFP_KERNEL|__GFP_NORETRY);
 	if (!m->bvecs)
 		return -ENOMEM;
 
