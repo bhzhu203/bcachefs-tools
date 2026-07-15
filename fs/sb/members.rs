@@ -465,12 +465,21 @@ impl SbFieldOps for c::bch_sb_field_members_v2 {
             mi.failure_domain = failure_domain_id(sb.sb(), dev, &m);
 
             ca.set_mi(sb, mi);
-            fs.devs_rotational.assign(dev as usize, mi.rotational != 0);
         }
 
         if let Some(mi2) = members_v2(sb.sb()) {
             for i in 0..fs.nr_devices() {
-                fs.devs_removed.assign(i as usize, mi2.get(i).unwrap_or_default().deleted());
+                let m = mi2.get(i).unwrap_or_default();
+                let removed = m.deleted();
+                fs.devs_removed.assign(i as usize, removed);
+                /*
+                 * Devices aren't registered yet when the superblock is read,
+                 * so the loop above sees none of them. Fill the rotational
+                 * mask from the members section instead.
+                 */
+                if !removed {
+                    fs.devs_rotational.assign(i as usize, m.rotational());
+                }
             }
         }
         Ok(())
