@@ -517,8 +517,6 @@ void bch2_sb_members_to_cpu(struct bch_fs *c)
 	for_each_member_device(c, ca) {
 		struct bch_member m = bch2_sb_member_get(c->disk_sb.sb, ca->dev_idx);
 		ca->mi = bch2_mi_to_cpu(&m);
-
-		mod_bit(ca->dev_idx, c->devs_rotational.d, ca->mi.rotational);
 	}
 
 	/*
@@ -559,6 +557,8 @@ void bch2_sb_members_to_cpu(struct bch_fs *c)
 			struct bch_member m = bch2_members_v2_get(mi2, i);
 			bool removed = uuid_equal(&m.uuid, &BCH_SB_MEMBER_DELETED_UUID);
 			mod_bit(i, c->devs_removed.d, removed);
+			if (!removed)
+				mod_bit(i, c->devs_rotational.d, BCH_MEMBER_ROTATIONAL(&m));
 		}
 }
 
