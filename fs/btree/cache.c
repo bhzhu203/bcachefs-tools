@@ -245,10 +245,11 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 		if (!b->data) {
 			/*
 			 * kmalloc failed (memory fragmentation or pressure).
-			 * Fall back to __vmalloc without __GFP_RECLAIMABLE
-			 * since vmalloc doesn't support it in kernels < 6.18.
+			 * Fall back to __vmalloc with __GFP_RECLAIMABLE.
+			 * In kernel 6.17+, __vmalloc supports __GFP_RECLAIMABLE
+			 * and pages land in MIGRATE_RECLAIMABLE pageblocks.
 			 */
-			b->data = __vmalloc(bytes, gfp);
+			b->data = __vmalloc(bytes, gfp_reclaimable);
 		}
 		if (!b->data)
 			return bch_err_throw(c, ENOMEM_btree_node_mem_alloc);
