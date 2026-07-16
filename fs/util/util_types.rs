@@ -88,6 +88,7 @@ c_extern! {
     pub fn rust_kzalloc_nofail(size: usize) -> *mut c_void;
     pub fn rust_kfree(p: *const c_void);
     pub fn rust_kvzalloc(size: usize) -> *mut c_void;
+    pub fn rust_kvzalloc_gfp(size: usize, gfp: c::gfp_t) -> *mut c_void;
     pub fn rust_kvfree(p: *mut c_void);
     pub fn rust_kvfree_rcu(p: *mut c_void);
     pub fn bch2_local_clock() -> u64;

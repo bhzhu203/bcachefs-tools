@@ -754,7 +754,7 @@ fn trigger(t: &TransAttempt<'_, '_>, op: &mut TriggerOp<'_>) -> Result<(), BchEr
     // and mark the new - with locking
     let m = if gc {
         let new = new.expect("gc marks keys going in");
-        let Ok(m) = fs.ec.gc_stripe_alloc(idx, c::GFP_KERNEL) else {
+        let Ok(m) = fs.ec.gc_stripe_alloc(idx, c::GFP_KERNEL | c::__GFP_RECLAIMABLE | c::__GFP_NOWARN) else {
             bch_err!(fs, "error allocating memory for gc_stripes, idx {idx}");
             return fs.throw(bch_errcode::BCH_ERR_ENOMEM_mark_stripe);
         };

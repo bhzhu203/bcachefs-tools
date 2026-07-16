@@ -1316,7 +1316,8 @@ retry:
 	 * the write buffer locks under j->buf_lock. Growing inc has no
 	 * fallback; that one has to be allowed to wait.
 	 */
-	gfp_t gfp = pb->wb == &wb->flushing ? WB_RESIZE_GFP : GFP_KERNEL;
+	gfp_t gfp = (pb->wb == &wb->flushing ? WB_RESIZE_GFP : GFP_KERNEL) |
+		__GFP_RECLAIMABLE;
 
 #ifdef CONFIG_BCACHEFS_TESTS
 	bool force_alloc_failure =
