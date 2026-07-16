@@ -1900,7 +1900,7 @@ void bch2_fs_io_read_exit(struct bch_fs *c)
 
 static void *bio_bounce_buf_alloc_fn(gfp_t gfp, void *pool_data)
 {
-	return (void *) __get_free_pages(gfp, PAGE_ALLOC_COSTLY_ORDER);
+	return (void *) __get_free_pages(gfp|__GFP_RECLAIMABLE, PAGE_ALLOC_COSTLY_ORDER);
 }
 
 static void bio_bounce_buf_free_fn(void *p, void *pool_data)
