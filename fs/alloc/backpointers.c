@@ -1432,7 +1432,7 @@ static int bch2_bucket_bitmap_set(struct bch_dev *ca, struct bucket_bitmap *b, u
 	scoped_guard(mutex, &b->lock) {
 		if (!b->buckets) {
 			b->buckets = kvcalloc(BITS_TO_LONGS(ca->mi.nbuckets),
-					      sizeof(unsigned long), GFP_KERNEL);
+					      sizeof(unsigned long), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 			if (!b->buckets)
 				return bch_err_throw(ca->fs, ENOMEM_backpointer_mismatches_bitmap);
 		}
@@ -1451,7 +1451,7 @@ int bch2_bucket_bitmap_resize(struct bch_dev *ca, struct bucket_bitmap *b,
 			return 0;
 
 		unsigned long *n = kvcalloc(BITS_TO_LONGS(new_size),
-					    sizeof(unsigned long), GFP_KERNEL);
+					    sizeof(unsigned long), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 		if (!n)
 			return bch_err_throw(ca->fs, ENOMEM_backpointer_mismatches_bitmap);
 

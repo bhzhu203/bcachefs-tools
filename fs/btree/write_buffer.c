@@ -1279,7 +1279,7 @@ int bch2_journal_key_to_wb_slowpath(struct bch_fs *c,
 	unsigned u64s = wb_key_u64s(k);
 	int ret;
 retry:
-	ret = darray_make_room_gfp(&pb->wb->keys, u64s, GFP_KERNEL);
+	ret = darray_make_room_gfp(&pb->wb->keys, u64s, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 	if (!ret && pb->wb == &wb->flushing)
 		ret = darray_resize(&wb->sorted, wb->flushing.keys.size);
 
