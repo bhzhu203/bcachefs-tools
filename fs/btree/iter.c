@@ -2018,7 +2018,7 @@ static noinline btree_path_idx_t btree_paths_realloc(struct btree_trans *trans,
 			  sizeof(struct btree_trans_paths) +
 			  nr * sizeof(struct btree_path) +
 			  nr * sizeof(btree_path_idx_t) + 8 +
-			  nr * sizeof(struct btree_insert_entry), GFP_KERNEL|__GFP_NOFAIL);
+			  nr * sizeof(struct btree_insert_entry), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOFAIL);
 
 	unsigned long *paths_allocated = p;
 	memcpy(paths_allocated, trans->paths_allocated, BITS_TO_LONGS(trans->nr_paths) * sizeof(unsigned long));
