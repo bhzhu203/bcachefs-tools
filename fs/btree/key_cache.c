@@ -173,7 +173,7 @@ bkey_cached_alloc(struct btree_trans *trans, struct btree_path *path, unsigned k
 	}
 
 	if (ck) {
-		bch2_btree_lock_init(&ck->c, pcpu_readers ? SIX_LOCK_INIT_PCPU : 0, GFP_KERNEL);
+		bch2_btree_lock_init(&ck->c, pcpu_readers ? SIX_LOCK_INIT_PCPU : 0, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 		ck->c.cached = true;
 		/* Brand new lock, trylock can't fail. */
 		BUG_ON(!six_trylock_intent(&ck->c.lock));

@@ -293,8 +293,8 @@ struct btree *__bch2_btree_node_mem_alloc(struct bch_fs *c)
 	struct btree_node_bufs bufs = { .byte_order = ilog2(c->opts.btree_node_size) };
 	struct btree *b;
 
-	if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL) ||
-	    !(b = __btree_node_mem_alloc(c, false, GFP_KERNEL))) {
+	if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN) ||
+	    !(b = __btree_node_mem_alloc(c, false, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN))) {
 		btree_node_bufs_free(&bufs);
 		return NULL;
 	}
@@ -1033,7 +1033,7 @@ struct btree *bch2_btree_node_mem_alloc(struct btree_trans *trans, bool pcpu_rea
 	struct btree_node_bufs bufs = { .byte_order = ilog2(c->opts.btree_node_size) };
 	if (__btree_node_data_alloc(c, &bufs, GFP_NOWAIT)) {
 		bch2_trans_unlock(trans);
-		if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL|__GFP_NOWARN)) {
+		if (__btree_node_data_alloc(c, &bufs, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN)) {
 			btree_node_bufs_free(&bufs);
 			goto err;
 		}
@@ -1044,7 +1044,7 @@ struct btree *bch2_btree_node_mem_alloc(struct btree_trans *trans, bool pcpu_rea
 		b = __btree_node_mem_alloc(c, pcpu_read_locks, GFP_NOWAIT);
 		if (!b) {
 			bch2_trans_unlock(trans);
-			b = __btree_node_mem_alloc(c, pcpu_read_locks, GFP_KERNEL);
+			b = __btree_node_mem_alloc(c, pcpu_read_locks, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 			if (!b) {
 				btree_node_bufs_free(&bufs);
 				goto err;
@@ -1851,7 +1851,7 @@ int bch2_fs_btree_evicted_size_init(struct bch_fs *c)
 		bits += (ilog2(max_nodes) - 22) / 4;
 	u64 nr = 1ULL << bits;
 
-	e->entries = kvcalloc(nr, sizeof(u64), GFP_KERNEL);
+	e->entries = kvcalloc(nr, sizeof(u64), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
 	if (!e->entries)
 		return bch_err_throw(c, ENOMEM_fs_other_alloc);
 
