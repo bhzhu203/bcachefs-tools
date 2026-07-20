@@ -1507,7 +1507,7 @@ bch2_btree_update_start(struct btree_trans *trans, btree_path_idx_t path_idx,
 		}
 	}
 
-	as = mempool_alloc(&c->btree.interior_updates.pool, GFP_NOIO);
+	as = mempool_alloc(&c->btree.interior_updates.pool, GFP_NOIO|__GFP_RECLAIMABLE);
 	memset(as, 0, sizeof(*as));
 	closure_init(&as->cl, NULL);
 	as->c			= c;
@@ -3517,7 +3517,7 @@ void bch2_async_btree_op(struct bch_fs *c, struct btree *b,
 		return;
 
 	struct async_btree_rewrite *a =
-		kzalloc(sizeof(*a), GFP_NOIO|__GFP_NORETRY|__GFP_NOWARN);
+		kzalloc(sizeof(*a), GFP_NOIO|__GFP_NORETRY|__GFP_NOWARN|__GFP_RECLAIMABLE);
 	if (!a)
 		return;
 

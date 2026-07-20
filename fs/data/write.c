@@ -1279,7 +1279,7 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 			: bch2_dev_get_ioref(c, ptr->dev, ref_rw, ref_idx);
 
 		if (ptr != last) {
-			n = to_wbio(bio_alloc_clone(NULL, &wbio->bio, GFP_NOIO, &c->replica_set));
+			n = to_wbio(bio_alloc_clone(NULL, &wbio->bio, GFP_NOIO|__GFP_RECLAIMABLE, &c->replica_set));
 
 			n->bio.bi_end_io	= wbio->bio.bi_end_io;
 			n->bio.bi_private	= wbio->bio.bi_private;
@@ -1658,7 +1658,7 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 
 	pages = min(pages, BIO_MAX_VECS);
 
-	bio = bio_alloc_bioset(NULL, pages, 0, GFP_NOIO, &c->bio_write);
+	bio = bio_alloc_bioset(NULL, pages, 0, GFP_NOIO|__GFP_RECLAIMABLE, &c->bio_write);
 	wbio			= wbio_init(bio);
 	wbio->put_bio		= true;
 	/* copy WRITE_SYNC flag */
@@ -2139,7 +2139,7 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 		BUG_ON(total_output != total_input);
 
 		dst = bio_split(src, total_input >> 9,
-				GFP_NOIO, &c->bio_write);
+				GFP_NOIO|__GFP_RECLAIMABLE, &c->bio_write);
 		wbio_init(dst)->put_bio	= true;
 		/* copy WRITE_SYNC flag */
 		dst->bi_opf		= src->bi_opf;
@@ -2461,7 +2461,7 @@ retry:
 		bio = &op->wbio.bio;
 		if (k.k->p.offset < op->pos.offset + bio_sectors(bio)) {
 			bio = bio_split(bio, k.k->p.offset - op->pos.offset,
-					GFP_KERNEL, &c->bio_write);
+					GFP_KERNEL|__GFP_RECLAIMABLE, &c->bio_write);
 			wbio_init(bio)->put_bio = true;
 			bio->bi_opf = op->wbio.bio.bi_opf;
 		} else {

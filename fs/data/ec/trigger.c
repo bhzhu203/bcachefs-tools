@@ -403,7 +403,7 @@ int bch2_trigger_stripe(struct btree_trans *trans, struct btree_trigger_op op)
 
 		struct gc_stripe *gc = NULL;
 		if (op.flags & BTREE_TRIGGER_gc) {
-			gc = genradix_ptr_alloc(&c->ec.gc_stripes, idx, GFP_KERNEL);
+			gc = genradix_ptr_alloc(&c->ec.gc_stripes, idx, GFP_KERNEL|__GFP_RECLAIMABLE);
 			if (!gc) {
 				bch_err(c, "error allocating memory for gc_stripes, idx %llu", idx);
 				return bch_err_throw(c, ENOMEM_mark_stripe);
