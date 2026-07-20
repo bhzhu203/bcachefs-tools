@@ -113,16 +113,16 @@ int __bch2_darray_resize_noprof(darray_char *, size_t, size_t, gfp_t, bool, bool
 	__darray_resize((_d), (_new_size), _gfp, false)
 
 #define darray_resize(_d, _new_size)					\
-	darray_resize_gfp(_d, _new_size, GFP_KERNEL)
+	darray_resize_gfp(_d, _new_size, GFP_KERNEL|__GFP_RECLAIMABLE)
 
 #define darray_make_room_gfp(_d, _more, _gfp)				\
 	darray_resize_gfp((_d), (_d)->nr + (_more), _gfp)
 
 #define darray_make_room(_d, _more)					\
-	darray_make_room_gfp(_d, _more, GFP_KERNEL)
+	darray_make_room_gfp(_d, _more, GFP_KERNEL|__GFP_RECLAIMABLE)
 
 #define darray_resize_rcu(_d, _new_size)				\
-	__darray_resize((_d), (_new_size), GFP_KERNEL, true)
+	__darray_resize((_d), (_new_size), GFP_KERNEL|__GFP_RECLAIMABLE, true)
 
 #define darray_make_room_rcu(_d, _more)				\
 	darray_resize_rcu((_d), (_d)->nr + (_more))
@@ -140,7 +140,7 @@ int __bch2_darray_resize_noprof(darray_char *, size_t, size_t, gfp_t, bool, bool
 	_ret;								\
 })
 
-#define darray_push(_d, _item)	darray_push_gfp(_d, _item, GFP_KERNEL)
+#define darray_push(_d, _item)	darray_push_gfp(_d, _item, GFP_KERNEL|__GFP_RECLAIMABLE)
 
 #define darray_pop(_d)		((_d)->data[--(_d)->nr])
 

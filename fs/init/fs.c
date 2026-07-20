@@ -1416,7 +1416,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts *opts,
 				    const struct bch_key *user_key,
 				    struct printbuf *out)
 {
-	struct bch_fs *c = kvzalloc(sizeof(struct bch_fs), GFP_KERNEL);
+	struct bch_fs *c = kvzalloc(sizeof(struct bch_fs), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!c)
 		return ERR_PTR(-BCH_ERR_ENOMEM_fs_alloc);
 

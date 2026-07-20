@@ -16,7 +16,7 @@ static inline int bch2_bkey_buf_realloc_noprof(struct bkey_buf *s, unsigned u64s
 {
 	if (s->k == (void *) s->onstack &&
 	    u64s > ARRAY_SIZE(s->onstack)) {
-		s->k = kmalloc_noprof(2048, GFP_KERNEL|__GFP_NOFAIL);
+		s->k = kmalloc_noprof(2048, GFP_KERNEL|__GFP_NOFAIL|__GFP_RECLAIMABLE);
 		memcpy(s->k, s->onstack, sizeof(s->onstack));
 	}
 
