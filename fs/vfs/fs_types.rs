@@ -70,17 +70,13 @@ pub struct bch_inode_info {
 
     pub ei_writeback_timer: c::delayed_work,
 
-    /* Random read detection: suppress readahead for random workloads */
-    pub ei_last_ra_sector: c_ulong,
+    /*
+     * Random read detection (HDD only): track the end sector of the
+     * previous readahead window; suppress speculative readahead when
+     * requests keep landing far from it:
+     */
+    pub ei_last_ra_end: c_ulong,
     pub ei_random_ra_count: c_uint,
-
-    /* Single-entry extent map cache: skip btree lookup for same extent */
-    pub ei_ext_cache_start: u64,
-    pub ei_ext_cache_end: u64,
-    pub ei_ext_cache_key: c::bkey_buf,
-    pub ei_ext_cache_btree: c::btree_id,
-    pub ei_ext_cache_offset: i64,
-    pub ei_ext_cache_valid: bool,
 }
 c_default!(bch_inode_info);
 
