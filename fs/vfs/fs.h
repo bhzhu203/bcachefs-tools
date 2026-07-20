@@ -2,6 +2,7 @@
 #ifndef _BCACHEFS_FS_H
 #define _BCACHEFS_FS_H
 
+#include "btree/bkey_buf.h"
 #include "fs/inode.h"
 #include "fs/str_hash.h"
 #include "fs/quota_gen.h"
@@ -31,6 +32,11 @@ static inline void inode_state_set_raw(struct inode *inode, unsigned flags)
 #endif
 
 #include "vfs/fs_gen.h"
+
+static inline void bch2_inode_ext_cache_invalidate(struct bch_inode_info *inode)
+{
+	inode->ei_ext_cache_valid = false;
+}
 
 #define bch2_pagecache_add_put(i)	bch2_two_state_unlock(&(i)->ei_pagecache_lock, 0)
 #define bch2_pagecache_add_tryget(i)	bch2_two_state_trylock(&(i)->ei_pagecache_lock, 0)
