@@ -2,7 +2,6 @@
 #ifndef _BCACHEFS_FS_H
 #define _BCACHEFS_FS_H
 
-#include "btree/bkey_buf.h"
 #include "fs/inode.h"
 #include "fs/str_hash.h"
 #include "fs/quota_types.h"
@@ -88,23 +87,14 @@ struct bch_inode_info {
 
 	struct delayed_work	ei_writeback_timer;
 
-	/* Random read detection: suppress readahead for random workloads */
-	unsigned long		ei_last_ra_sector;
+	/*
+	 * Random read detection (HDD only): track the end sector of the
+	 * previous readahead window; suppress speculative readahead when
+	 * requests keep landing far from it:
+	 */
+	unsigned long		ei_last_ra_end;
 	unsigned int		ei_random_ra_count;
-
-	/* Single-entry extent map cache: skip btree lookup for same extent */
-	u64			ei_ext_cache_start;
-	u64			ei_ext_cache_end;
-	struct bkey_buf		ei_ext_cache_key;
-	enum btree_id		ei_ext_cache_btree;
-	s64			ei_ext_cache_offset;
-	bool			ei_ext_cache_valid;
 };
-
-static inline void bch2_inode_ext_cache_invalidate(struct bch_inode_info *inode)
-{
-	inode->ei_ext_cache_valid = false;
-}
 
 #define bch2_pagecache_add_put(i)	bch2_two_state_unlock(&(i)->ei_pagecache_lock, 0)
 #define bch2_pagecache_add_tryget(i)	bch2_two_state_trylock(&(i)->ei_pagecache_lock, 0)
