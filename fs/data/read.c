@@ -1611,17 +1611,6 @@ int __bch2_read_extent(struct btree_trans *trans,
 		      (flags & BCH_READ_must_bounce)))) {
 			read_full = true;
 			bounce = true;
-			/*
-			 * On HDD, for non-compressed checksummed extents
-			 * with a partial read, narrow the CRC after this
-			 * read so subsequent reads of the same region
-			 * avoid the full extent read:
-			 */
-			if (!crc_is_compressed(pick.crc) &&
-			    !orig->data_update &&
-			    !(flags & BCH_READ_in_retry) &&
-			    bch2_dev_rotational(c, pick.ptr.dev))
-				narrow_crcs = true;
 		}
 
 	struct bch_read_bio *rbio =
