@@ -625,7 +625,7 @@ static CLOSURE_CALLBACK(journal_write_preflush)
 			struct bio *bio = bio_alloc_bioset(ca->disk_sb.bdev, 0,
 					REQ_OP_WRITE|REQ_SYNC|REQ_IDLE|
 					REQ_META|REQ_PREFLUSH,
-					GFP_NOIO, &ja->bio_set);
+					GFP_NOIO|__GFP_RECLAIMABLE, &ja->bio_set);
 			struct journal_bio *jbio = container_of(bio, struct journal_bio, bio);
 
 			jbio->ca		= ca;

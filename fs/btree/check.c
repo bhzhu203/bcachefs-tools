@@ -1042,7 +1042,7 @@ static int bch2_gc_alloc_done(struct bch_fs *c)
 static int bch2_gc_alloc_start(struct bch_fs *c)
 {
 	for_each_member_device(c, ca) {
-		int ret = genradix_prealloc(&ca->buckets_gc, ca->mi.nbuckets, GFP_KERNEL);
+		int ret = genradix_prealloc(&ca->buckets_gc, ca->mi.nbuckets, GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (ret)
 			return bch_err_throw(c, ENOMEM_gc_alloc_start);
 	}

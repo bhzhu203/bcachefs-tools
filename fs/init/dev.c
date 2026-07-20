@@ -576,7 +576,7 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 	struct bch_dev *ca;
 	unsigned i;
 
-	ca = kzalloc(sizeof(*ca), GFP_KERNEL);
+	ca = kzalloc(sizeof(*ca), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!ca)
 		return NULL;
 
@@ -615,7 +615,7 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 
 	if (enumerated_ref_init(&ca->io_ref[READ],  BCH_DEV_READ_REF_NR,  NULL) ||
 	    enumerated_ref_init(&ca->io_ref[WRITE], BCH_DEV_WRITE_REF_NR, NULL) ||
-	    !(ca->sb_read_scratch = kmalloc(BCH_SB_READ_SCRATCH_BUF_SIZE, GFP_KERNEL)) ||
+	    !(ca->sb_read_scratch = kmalloc(BCH_SB_READ_SCRATCH_BUF_SIZE, GFP_KERNEL|__GFP_RECLAIMABLE)) ||
 	    bch2_dev_buckets_alloc(c, ca) ||
 	    bch2_dev_discards_init(ca) ||
 	    !(ca->io_done	= alloc_percpu(*ca->io_done)))

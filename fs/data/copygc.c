@@ -197,7 +197,7 @@ static int try_add_copygc_bucket(struct btree_trans *trans,
 	if (bucket_in_flight(buckets_in_flight, b.k))
 		return 0;
 
-	struct move_bucket *b_i = kmalloc(sizeof(*b_i), GFP_KERNEL);
+	struct move_bucket *b_i = kmalloc(sizeof(*b_i), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!b_i)
 		return -ENOMEM;
 

@@ -293,7 +293,7 @@ int bch2_quota_acct(struct bch_fs *c, struct bch_qid qid,
 	memset(&msgs, 0, sizeof(msgs));
 
 	for_each_set_qtype(c, i, q, qtypes) {
-		mq[i] = genradix_ptr_alloc(&q->table, qid.q[i], GFP_KERNEL);
+		mq[i] = genradix_ptr_alloc(&q->table, qid.q[i], GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (!mq[i])
 			return -ENOMEM;
 	}
@@ -345,8 +345,8 @@ int bch2_quota_transfer(struct bch_fs *c, unsigned qtypes,
 	memset(&msgs, 0, sizeof(msgs));
 
 	for_each_set_qtype(c, i, q, qtypes) {
-		src_q[i] = genradix_ptr_alloc(&q->table, src.q[i], GFP_KERNEL);
-		dst_q[i] = genradix_ptr_alloc(&q->table, dst.q[i], GFP_KERNEL);
+		src_q[i] = genradix_ptr_alloc(&q->table, src.q[i], GFP_KERNEL|__GFP_RECLAIMABLE);
+		dst_q[i] = genradix_ptr_alloc(&q->table, dst.q[i], GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (!src_q[i] || !dst_q[i])
 			return -ENOMEM;
 	}
@@ -401,7 +401,7 @@ static int __bch2_quota_set(struct bch_fs *c, struct bkey_s_c k,
 		q = &c->quotas[k.k->p.inode];
 
 		guard(mutex)(&q->lock);
-		mq = genradix_ptr_alloc(&q->table, k.k->p.offset, GFP_KERNEL);
+		mq = genradix_ptr_alloc(&q->table, k.k->p.offset, GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (!mq)
 			return -ENOMEM;
 

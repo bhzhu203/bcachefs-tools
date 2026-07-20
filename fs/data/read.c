@@ -317,7 +317,7 @@ static struct bch_read_bio *__promote_alloc(struct btree_trans *trans,
 		goto err_put;
 	}
 
-	struct promote_op *op = kzalloc(sizeof(*op), GFP_KERNEL);
+	struct promote_op *op = kzalloc(sizeof(*op), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!op) {
 		ret = bch_err_throw(c, nopromote_enomem);
 		goto err_up_limit;
@@ -1305,7 +1305,7 @@ static inline struct bch_read_bio *read_extent_rbio_alloc(struct btree_trans *tr
 		rbio = rbio_init_fragment(bio_alloc_bioset(NULL,
 						  DIV_ROUND_UP(sectors, PAGE_SECTORS),
 						  0,
-						  GFP_NOIO,
+						  GFP_NOIO|__GFP_RECLAIMABLE,
 						  &c->bio_read_split),
 				 orig, failed);
 
@@ -1334,7 +1334,8 @@ static inline struct bch_read_bio *read_extent_rbio_alloc(struct btree_trans *tr
 		 * from the whole bio, in which case we don't want to retry and
 		 * lose the error)
 		 */
-		rbio = rbio_init_fragment(bio_alloc_clone(NULL, &orig->bio, GFP_NOIO,
+		rbio = rbio_init_fragment(bio_alloc_clone(NULL, &orig->bio,
+						 GFP_NOIO|__GFP_RECLAIMABLE,
 						 &c->bio_read_split),
 				 orig, failed);
 		rbio->bio.bi_iter = iter;
