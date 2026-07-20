@@ -284,6 +284,22 @@ err:
 }
 
 /*
+ * Extent map cache, local to a single readahead call: consecutive folios
+ * in a window usually lie in the same extent, so caching the last looked
+ * up key avoids repeating the btree traversal for every folio.
+ *
+ * Its lifetime is bounded by the readahead call, so it cannot go stale
+ * across extent map changes (writes, truncate, rebalance) the way a
+ * persistent cache could:
+ */
+struct ra_extent_cache {
+	u64		start;	/* first sector covered by cached key */
+	u64		end;	/* end of cached key (exclusive) */
+	bool		valid;
+	struct bkey_buf	key;
+};
+
+/*
  * Like bchfs_read(), but reuses a shared btree iterator and pre-fetched
  * snapshot across multiple folios in a readahead window, avoiding per-folio
  * iterator allocation and snapshot lookup:
@@ -293,11 +309,10 @@ static void bchfs_read_shared(struct btree_trans *trans,
 			      subvol_inum inum,
 			      struct readpages_iter *readpages_iter,
 			      struct btree_iter *iter,
-			      u32 snapshot)
+			      u32 snapshot,
+			      struct ra_extent_cache *ext_cache)
 {
 	struct bch_fs *c = trans->c;
-	struct bch_inode_info *inode = readpages_iter
-		? to_bch_ei(readpages_iter->mapping->host) : NULL;
 	int flags = BCH_READ_retry_if_stale|
 		BCH_READ_may_promote;
 	int ret = 0;
@@ -307,31 +322,27 @@ static void bchfs_read_shared(struct btree_trans *trans,
 	struct bkey_buf sk __cleanup(bch2_bkey_buf_exit);
 	bch2_bkey_buf_init(&sk);
 
+	struct bpos read_pos = POS(inum.inum, rbio->bio.bi_iter.bi_sector);
+
 	while (1) {
 		struct bkey_s_c k;
 		unsigned bytes, sectors;
 		s64 offset_into_extent;
 		enum btree_id data_btree = BTREE_ID_extents;
-		u64 read_sector = rbio->bio.bi_iter.bi_sector;
 
 		bch2_trans_begin(trans);
 
-		/*
-		 * Per-inode extent map cache: if the read falls within a
-		 * previously looked-up extent, skip the btree traversal:
-		 */
-		if (inode && inode->ei_ext_cache_valid &&
-		    read_sector >= inode->ei_ext_cache_start &&
-		    read_sector < inode->ei_ext_cache_end) {
-			k = bkey_i_to_s_c(inode->ei_ext_cache_key.k);
-			offset_into_extent = read_sector -
-				inode->ei_ext_cache_start;
-			data_btree = inode->ei_ext_cache_btree;
+		read_pos = POS(inum.inum, rbio->bio.bi_iter.bi_sector);
+
+		if (ext_cache->valid &&
+		    read_pos.offset >= ext_cache->start &&
+		    read_pos.offset < ext_cache->end) {
+			k = bkey_i_to_s_c(ext_cache->key.k);
+			offset_into_extent = read_pos.offset - ext_cache->start;
 		} else {
 			bch2_btree_iter_set_snapshot(iter, snapshot);
 
-			bch2_btree_iter_set_pos(iter,
-					POS(inum.inum, read_sector));
+			bch2_btree_iter_set_pos(iter, read_pos);
 
 			k = bch2_btree_iter_peek_slot(iter);
 			ret = bkey_err(k);
@@ -341,13 +352,11 @@ static void bchfs_read_shared(struct btree_trans *trans,
 			offset_into_extent = iter->pos.offset -
 				bkey_start_offset(k.k);
 
-			if (inode && !bkey_deleted(k.k)) {
-				bch2_bkey_buf_reassemble(&inode->ei_ext_cache_key, k);
-				inode->ei_ext_cache_start = bkey_start_offset(k.k);
-				inode->ei_ext_cache_end =
-					inode->ei_ext_cache_start + k.k->size;
-				inode->ei_ext_cache_btree = data_btree;
-				inode->ei_ext_cache_valid = true;
+			if (!bkey_deleted(k.k)) {
+				bch2_bkey_buf_reassemble(&ext_cache->key, k);
+				ext_cache->start = bkey_start_offset(k.k);
+				ext_cache->end = ext_cache->start + k.k->size;
+				ext_cache->valid = true;
 			}
 		}
 
@@ -381,7 +390,7 @@ static void bchfs_read_shared(struct btree_trans *trans,
 
 		bch2_bio_page_state_set(c, &rbio->bio, k);
 
-		bch2_read_extent(trans, rbio, iter->pos,
+		bch2_read_extent(trans, rbio, read_pos,
 				 data_btree, k, offset_into_extent, flags);
 
 		if (flags & BCH_READ_last_fragment)
@@ -397,7 +406,7 @@ err:
 
 	if (ret) {
 		CLASS(printbuf, buf)();
-		bch2_read_err_msg_trans(trans, &buf, rbio, iter->pos);
+		bch2_read_err_msg_trans(trans, &buf, rbio, read_pos);
 		prt_printf(&buf, "data read error: %s", bch2_err_str(ret));
 		bch_err_ratelimited(c, "%s", buf.buf);
 
@@ -422,32 +431,46 @@ void bch2_readahead(struct readahead_control *ractl)
 		return;
 
 	/*
-	 * Random read detection: if consecutive readahead requests are far
-	 * apart, the workload is likely random and readahead just wastes HDD
-	 * seeks.  After enough random hits, suppress readahead to only the
-	 * requested folio:
+	 * Random read detection (HDD only): sequential readers produce
+	 * readahead windows adjacent to the previous window's end, while
+	 * random readers jump around.  After enough consecutive jumps,
+	 * truncate the window to the first (demand) folio so speculative
+	 * readahead doesn't waste HDD seeks; reverted folios go back to
+	 * the ractl, where the core readahead code drops them:
 	 */
-	unsigned max_folios = readpages_iter.folios.nr;
-	if (max_folios > 1) {
-		struct folio *first = readpage_iter_peek(&readpages_iter);
+	if (readpages_iter.folios.nr &&
+	    !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX)) {
+		struct folio *first = readpages_iter.folios.data[0];
+		struct folio *last =
+			readpages_iter.folios.data[readpages_iter.folios.nr - 1];
+		unsigned long this_start = folio_sector(first);
+		unsigned long this_end = folio_sector(last) +
+			(folio_size(last) >> 9);
 
-		if (first) {
-			unsigned long this_sector = folio_sector(first);
+		if (inode->ei_last_ra_end) {
+			long delta = (long) this_start -
+				(long) inode->ei_last_ra_end;
 
-			if (inode->ei_last_ra_sector) {
-				long delta = (long)(this_sector - inode->ei_last_ra_sector);
+			if (delta < -64 || delta > 512) {
+				if (++inode->ei_random_ra_count > 4 &&
+				    readpages_iter.folios.nr > 1) {
+					unsigned i;
 
-				if (delta < 0)
-					delta = -delta;
-				if (delta > 64) { /* > 256KB apart */
-					if (++inode->ei_random_ra_count > 4)
-						max_folios = 1;
-				} else {
-					inode->ei_random_ra_count = 0;
+					for (i = readpages_iter.folios.nr - 1;
+					     i > 0; i--) {
+						readpages_iter_folio_revert(ractl,
+							readpages_iter.folios.data[i]);
+						folio_get(readpages_iter.folios.data[i]);
+					}
+					readpages_iter.folios.nr = 1;
+					this_end = folio_sector(first) +
+						(folio_size(first) >> 9);
 				}
+			} else {
+				inode->ei_random_ra_count = 0;
 			}
-			inode->ei_last_ra_sector = this_sector;
 		}
+		inode->ei_last_ra_end = this_end;
 	}
 
 	/*
@@ -475,20 +498,27 @@ void bch2_readahead(struct readahead_control *ractl)
 	 * traversal overhead so bios are submitted in a tighter loop for
 	 * better NCQ utilization on HDD:
 	 */
-	bch2_trans_begin(trans);
 	u32 snapshot;
-	ret = bch2_subvolume_get_snapshot(trans, inode_inum(inode).subvol, &snapshot);
-	if (ret)
+	do {
+		bch2_trans_begin(trans);
+		ret = bch2_subvolume_get_snapshot(trans, inode_inum(inode).subvol,
+						  &snapshot);
+	} while (ret && bch2_err_matches(ret, BCH_ERR_transaction_restart));
+
+	if (ret) {
+		readpages_iter_exit(&readpages_iter, ractl);
 		goto out_trans;
+	}
 
 	struct btree_iter iter;
 	__bch2_trans_iter_init(trans, &iter, BTREE_ID_extents,
 			       POS(inode_inum(inode).inum, 0),
 			       BTREE_ITER_slots|BTREE_ITER_prefetch);
 
-	unsigned folios_processed = 0;
-	while ((folio = readpage_iter_peek(&readpages_iter)) &&
-	       folios_processed < max_folios) {
+	struct ra_extent_cache ext_cache = { .valid = false };
+	bch2_bkey_buf_init(&ext_cache.key);
+
+	while ((folio = readpage_iter_peek(&readpages_iter))) {
 		unsigned n = min_t(unsigned,
 				   readpages_iter.folios.nr -
 				   readpages_iter.idx,
@@ -502,16 +532,16 @@ void bch2_readahead(struct readahead_control *ractl)
 				  bch2_readpages_end_io);
 
 		readpage_iter_advance(&readpages_iter);
-		folios_processed++;
 
 		rbio->bio.bi_iter.bi_sector = folio_sector(folio);
 		bio_add_folio_nofail(&rbio->bio, folio, folio_size(folio), 0);
 
 		bchfs_read_shared(trans, rbio, inode_inum(inode),
-				  &readpages_iter, &iter, snapshot);
+				  &readpages_iter, &iter, snapshot, &ext_cache);
 		bch2_trans_unlock(trans);
 	}
 
+	bch2_bkey_buf_exit(&ext_cache.key);
 	bch2_trans_iter_exit(&iter);
 out_trans:
 	bch2_trans_put(trans);
@@ -954,8 +984,6 @@ int bch2_write_begin(
 	struct folio *folio;
 	unsigned offset;
 	int ret = -ENOMEM;
-
-	bch2_inode_ext_cache_invalidate(inode);
 
 	res = kmalloc(sizeof(*res), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!res)
