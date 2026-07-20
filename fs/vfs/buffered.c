@@ -419,6 +419,8 @@ static void bchfs_read_shared(struct btree_trans *trans,
 			      u32 snapshot)
 {
 	struct bch_fs *c = trans->c;
+	struct bch_inode_info *inode = readpages_iter
+		? to_bch_ei(readpages_iter->mapping->host) : NULL;
 	int flags = BCH_READ_retry_if_stale|
 		BCH_READ_may_promote;
 	int ret = 0;
@@ -433,21 +435,45 @@ static void bchfs_read_shared(struct btree_trans *trans,
 		unsigned bytes, sectors;
 		s64 offset_into_extent;
 		enum btree_id data_btree = BTREE_ID_extents;
+		u64 read_sector = rbio->bio.bi_iter.bi_sector;
 
 		bch2_trans_begin(trans);
 
-		bch2_btree_iter_set_snapshot(iter, snapshot);
+		/*
+		 * Per-inode extent map cache: if the read falls within a
+		 * previously looked-up extent, skip the btree traversal:
+		 */
+		if (inode && inode->ei_ext_cache_valid &&
+		    read_sector >= inode->ei_ext_cache_start &&
+		    read_sector < inode->ei_ext_cache_end) {
+			k = bkey_i_to_s_c(inode->ei_ext_cache_key.k);
+			offset_into_extent = read_sector -
+				inode->ei_ext_cache_start;
+			data_btree = inode->ei_ext_cache_btree;
+		} else {
+			bch2_btree_iter_set_snapshot(iter, snapshot);
 
-		bch2_btree_iter_set_pos(iter,
-				POS(inum.inum, rbio->bio.bi_iter.bi_sector));
+			bch2_btree_iter_set_pos(iter,
+					POS(inum.inum, read_sector));
 
-		k = bch2_btree_iter_peek_slot(iter);
-		ret = bkey_err(k);
-		if (ret)
-			goto err;
+			k = bch2_btree_iter_peek_slot(iter);
+			ret = bkey_err(k);
+			if (ret)
+				goto err;
 
-		offset_into_extent = iter->pos.offset -
-			bkey_start_offset(k.k);
+			offset_into_extent = iter->pos.offset -
+				bkey_start_offset(k.k);
+
+			if (inode && !bkey_deleted(k.k)) {
+				bch2_bkey_buf_reassemble(&inode->ei_ext_cache_key, k);
+				inode->ei_ext_cache_start = bkey_start_offset(k.k);
+				inode->ei_ext_cache_end =
+					inode->ei_ext_cache_start + k.k->size;
+				inode->ei_ext_cache_btree = data_btree;
+				inode->ei_ext_cache_valid = true;
+			}
+		}
+
 		sectors = k.k->size - offset_into_extent;
 
 		bch2_bkey_buf_reassemble(&sk, k);
@@ -519,6 +545,35 @@ void bch2_readahead(struct readahead_control *ractl)
 		return;
 
 	/*
+	 * Random read detection: if consecutive readahead requests are far
+	 * apart, the workload is likely random and readahead just wastes HDD
+	 * seeks.  After enough random hits, suppress readahead to only the
+	 * requested folio:
+	 */
+	unsigned max_folios = readpages_iter.folios.nr;
+	if (max_folios > 1) {
+		struct folio *first = readpage_iter_peek(&readpages_iter);
+
+		if (first) {
+			unsigned long this_sector = folio_sector(first);
+
+			if (inode->ei_last_ra_sector) {
+				long delta = (long)(this_sector - inode->ei_last_ra_sector);
+
+				if (delta < 0)
+					delta = -delta;
+				if (delta > 64) { /* > 256KB apart */
+					if (++inode->ei_random_ra_count > 4)
+						max_folios = 1;
+				} else {
+					inode->ei_random_ra_count = 0;
+				}
+			}
+			inode->ei_last_ra_sector = this_sector;
+		}
+	}
+
+	/*
 	 * Besides being a general performance optimization, plugging helps with
 	 * avoiding btree transaction srcu warnings - submitting a bio can
 	 * block, and we don't want todo that with the transaction locked.
@@ -554,7 +609,9 @@ void bch2_readahead(struct readahead_control *ractl)
 			       POS(inode_inum(inode).inum, 0),
 			       BTREE_ITER_slots|BTREE_ITER_prefetch);
 
-	while ((folio = readpage_iter_peek(&readpages_iter))) {
+	unsigned folios_processed = 0;
+	while ((folio = readpage_iter_peek(&readpages_iter)) &&
+	       folios_processed < max_folios) {
 		unsigned n = min_t(unsigned,
 				   readpages_iter.folios.nr -
 				   readpages_iter.idx,
@@ -568,6 +625,7 @@ void bch2_readahead(struct readahead_control *ractl)
 				  bch2_readpages_end_io);
 
 		readpage_iter_advance(&readpages_iter);
+		folios_processed++;
 
 		rbio->bio.bi_iter.bi_sector = folio_sector(folio);
 		bio_add_folio_nofail(&rbio->bio, folio, folio_size(folio), 0);
@@ -1021,6 +1079,8 @@ int bch2_write_begin(
 	struct folio *folio;
 	unsigned offset;
 	int ret = -ENOMEM;
+
+	bch2_inode_ext_cache_invalidate(inode);
 
 	res = kmalloc(sizeof(*res), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!res)
