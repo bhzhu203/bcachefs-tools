@@ -494,6 +494,10 @@ static struct bch_inode_info *__bch2_new_inode(struct bch_fs *c, gfp_t gfp)
 	mutex_init(&inode->ei_quota_lock);
 	memset(&inode->ei_devs_need_flush, 0, sizeof(inode->ei_devs_need_flush));
 	INIT_DELAYED_WORK(&inode->ei_writeback_timer, bch2_vfs_writeback_fn);
+	inode->ei_last_ra_sector = 0;
+	inode->ei_random_ra_count = 0;
+	bch2_bkey_buf_init(&inode->ei_ext_cache_key);
+	inode->ei_ext_cache_valid = false;
 
 	if (unlikely(inode_init_always_gfp(c->vfs_sb, &inode->v, gfp))) {
 		fast_list_put_idx(&c->vfs.inodes, idx);
@@ -1439,6 +1443,9 @@ static int bch2_setattr(struct mnt_idmap *idmap,
 
 	lockdep_assert_held(&inode->v.i_rwsem);
 
+	if (iattr->ia_valid & ATTR_SIZE)
+		bch2_inode_ext_cache_invalidate(inode);
+
 	int ret = bch2_subvol_is_ro(c, inode->ei_inum.subvol) ?:
 		setattr_prepare(idmap, dentry, iattr) ?:
 		(iattr->ia_valid & ATTR_SIZE
@@ -2215,7 +2222,10 @@ static void bch2_vfs_inode_init(struct btree_trans *trans,
 
 static void bch2_free_inode(struct inode *vinode)
 {
-	kmem_cache_free(bch2_inode_cache, to_bch_ei(vinode));
+	struct bch_inode_info *inode = to_bch_ei(vinode);
+
+	bch2_bkey_buf_exit(&inode->ei_ext_cache_key);
+	kmem_cache_free(bch2_inode_cache, inode);
 }
 
 static int inode_update_times_fn(struct btree_trans *trans,
