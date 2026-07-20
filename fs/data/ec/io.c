@@ -537,7 +537,7 @@ void bch2_ec_block_io_range(struct bch_fs *c, struct ec_stripe_buf *buf,
 		ec_bio = container_of(bio_alloc_bioset(ca->disk_sb.bdev,
 						       nr_iovecs,
 						       opf,
-						       GFP_KERNEL,
+						       GFP_KERNEL|__GFP_RECLAIMABLE,
 						       &c->ec.block_bioset),
 				      struct ec_bio, bio);
 
@@ -596,7 +596,7 @@ int bch2_ec_read_extent(struct btree_trans *trans, struct bch_read_bio *rbio,
 
 	BUG_ON(!rbio->pick.has_ec);
 
-	struct ec_stripe_buf *buf __free(ec_stripe_buf_free) = kzalloc(sizeof(*buf), GFP_KERNEL);
+	struct ec_stripe_buf *buf __free(ec_stripe_buf_free) = kzalloc(sizeof(*buf), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!buf) {
 		prt_printf(msg, "error allocating struct ec_stripe_buf\n");
 		return bch_err_throw(c, stripe_reconstruct_enomem);

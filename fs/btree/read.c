@@ -617,7 +617,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 	/* We might get called multiple times on read retry: */
 	b->written = 0;
 
-	iter = mempool_alloc(&c->btree.fill_iter, GFP_NOIO);
+	iter = mempool_alloc(&c->btree.fill_iter, GFP_NOIO|__GFP_RECLAIMABLE);
 	sort_iter_init(iter, b, (btree_blocks(c) + 1) * 2);
 
 	if (bch2_meta_read_fault("btree"))
@@ -1082,7 +1082,7 @@ void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 	bio = bio_alloc_bioset(NULL,
 			       buf_nr_bvecs(b->data, btree_buf_bytes(b)),
 			       REQ_OP_READ|REQ_SYNC|REQ_META,
-			       GFP_NOIO,
+			       GFP_NOIO|__GFP_RECLAIMABLE,
 			       &c->btree.bio);
 	rb = container_of(bio, struct btree_read_bio, bio);
 	bio->bi_ioprio		= IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 0);

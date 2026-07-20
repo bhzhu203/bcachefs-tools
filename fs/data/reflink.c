@@ -812,7 +812,7 @@ int bch2_gc_reflink_start(struct bch_fs *c)
 				continue;
 
 			struct reflink_gc *r = genradix_ptr_alloc(&c->reflink_gc_table,
-							c->reflink_gc_nr++, GFP_KERNEL);
+							c->reflink_gc_nr++, GFP_KERNEL|__GFP_RECLAIMABLE);
 			if (!r) {
 				ret = bch_err_throw(c, ENOMEM_gc_reflink_start);
 				break;

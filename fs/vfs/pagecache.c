@@ -33,7 +33,7 @@ int bch2_filemap_get_contig_folios_d(struct address_space *mapping,
 		if ((u64) pos >= (u64) start + (1ULL << 20))
 			fgp_flags &= ~FGP_CREAT;
 
-		ret = darray_make_room_gfp(fs, 1, gfp & GFP_KERNEL);
+		ret = darray_make_room_gfp(fs, 1, (gfp & GFP_KERNEL)|__GFP_RECLAIMABLE);
 		if (ret)
 			break;
 
@@ -136,7 +136,8 @@ struct bch_folio *__bch2_folio_create(struct folio *folio, gfp_t gfp)
 {
 	struct bch_folio *s = kzalloc(sizeof(*s) +
 				      sizeof(struct bch_folio_sector) *
-				      folio_sectors(folio), gfp);
+				      folio_sectors(folio),
+				      gfp|__GFP_RECLAIMABLE);
 	if (!s)
 		return NULL;
 

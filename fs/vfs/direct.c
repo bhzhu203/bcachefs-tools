@@ -98,7 +98,7 @@ static int __bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       REQ_OP_READ,
-			       GFP_KERNEL,
+			       GFP_KERNEL|__GFP_RECLAIMABLE,
 			       &c->vfs.dio_read_bioset);
 
 	dio = container_of(bio, struct dio_read, rbio.bio);
@@ -135,7 +135,7 @@ static int __bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 		bio = bio_alloc_bioset(NULL,
 				       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 				       REQ_OP_READ,
-				       GFP_KERNEL,
+				       GFP_KERNEL|__GFP_RECLAIMABLE,
 				       &c->bio_read);
 start:
 		struct bch_read_bio *rbio =
@@ -316,7 +316,7 @@ static noinline int bch2_dio_write_copy_iov(struct dio_write *dio)
 
 	if (dio->iter.nr_segs > ARRAY_SIZE(dio->inline_vecs)) {
 		dio->iov = iov = kmalloc_array(dio->iter.nr_segs, sizeof(*iov),
-				    GFP_KERNEL);
+				    GFP_KERNEL|__GFP_RECLAIMABLE);
 		if (unlikely(!iov))
 			return -ENOMEM;
 	}
@@ -617,7 +617,7 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       REQ_OP_WRITE | REQ_SYNC | REQ_IDLE,
-			       GFP_KERNEL,
+			       GFP_KERNEL|__GFP_RECLAIMABLE,
 			       &c->vfs.dio_write_bioset);
 	dio = container_of(bio, struct dio_write, op.wbio.bio);
 	dio->req		= req;

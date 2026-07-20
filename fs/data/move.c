@@ -239,7 +239,7 @@ static int __bch2_move_extent(struct moving_context *ctxt,
 		ctxt->stats->pos = BBPOS(iter->btree_id, iter->pos);
 
 	struct data_update *u __free(data_update_free) =
-		allocate_dropping_locks(trans, ret, kzalloc(sizeof(struct data_update), _gfp));
+		allocate_dropping_locks(trans, ret, kzalloc(sizeof(struct data_update), _gfp|__GFP_RECLAIMABLE));
 	if (!u && !ret)
 		ret = bch_err_throw(c, ENOMEM_move_extent);
 	if (ret)

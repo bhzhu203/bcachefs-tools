@@ -521,7 +521,7 @@ int bch2_fs_journal_start(struct journal *j, struct journal_start_info info)
 
 	nr = max(nr, JOURNAL_PIN);
 
-	init_fifo(&j->pin, roundup_pow_of_two(nr), GFP_KERNEL);
+	init_fifo(&j->pin, roundup_pow_of_two(nr), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!j->pin.data) {
 		bch_err(c, "error allocating journal fifo (%llu open entries)", nr);
 		return bch_err_throw(c, ENOMEM_journal_pin_fifo);
@@ -680,7 +680,7 @@ int bch2_dev_journal_init(struct bch_dev *ca, struct bch_sb *sb)
 		ja->nr = bch2_nr_journal_buckets(journal_buckets);
 	}
 
-	ja->bucket_seq = kcalloc(ja->nr, sizeof(u64), GFP_KERNEL);
+	ja->bucket_seq = kcalloc(ja->nr, sizeof(u64), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!ja->bucket_seq)
 		return bch_err_throw(c, ENOMEM_dev_journal_init);
 
@@ -695,7 +695,7 @@ int bch2_dev_journal_init(struct bch_dev *ca, struct bch_sb *sb)
 			BIOSET_NEED_BVECS))
 		return bch_err_throw(c, ENOMEM_dev_journal_init);
 
-	ja->buckets = kcalloc(ja->nr, sizeof(u64), GFP_KERNEL);
+	ja->buckets = kcalloc(ja->nr, sizeof(u64), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!ja->buckets)
 		return bch_err_throw(c, ENOMEM_dev_journal_init);
 
