@@ -123,7 +123,7 @@ found:
 	}
 
 	struct bio *bio __free(bio_put) =
-		bio_alloc(ca->disk_sb.bdev, buf_nr_bvecs(data_buf, bytes), REQ_OP_READ, GFP_KERNEL);
+		bio_alloc(ca->disk_sb.bdev, buf_nr_bvecs(data_buf, bytes), REQ_OP_READ, GFP_KERNEL|__GFP_RECLAIMABLE);
 
 	CLASS(printbuf, buf)(); /* before first goto */
 

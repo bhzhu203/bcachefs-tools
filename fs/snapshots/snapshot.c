@@ -502,7 +502,7 @@ static noinline struct snapshot_t *__snapshot_t_mut(struct bch_fs *c, u32 id)
 	if (unlikely(new_bytes > INT_MAX))
 		return NULL;
 
-	new = kvzalloc(new_bytes, GFP_KERNEL);
+	new = kvzalloc(new_bytes, GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!new)
 		return NULL;
 

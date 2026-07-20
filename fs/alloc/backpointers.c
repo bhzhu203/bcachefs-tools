@@ -1403,7 +1403,7 @@ struct bkey_s_c_backpointer bch2_bp_scan_iter_peek(struct btree_trans *trans,
 			struct bkey_i_backpointer bp;
 			bkey_reassemble(&bp.k_i, k);
 			if (iter->bps.nr > limit ||
-			    darray_push_gfp(&iter->bps, bp, GFP_KERNEL|__GFP_NOWARN))
+			    darray_push_gfp(&iter->bps, bp, GFP_KERNEL|__GFP_NOWARN|__GFP_RECLAIMABLE))
 				break;
 
 			iter->pos = bpos_nosnap_successor(k.k->p);

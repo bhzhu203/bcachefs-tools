@@ -321,7 +321,8 @@ void bch2_readahead(struct readahead_control *ractl)
 				   BIO_MAX_VECS);
 		struct bch_read_bio *rbio =
 			rbio_init(bio_alloc_bioset(NULL, n, REQ_OP_READ,
-						   GFP_KERNEL, &c->bio_read),
+						   GFP_KERNEL|__GFP_RECLAIMABLE,
+						   &c->bio_read),
 				  c,
 				  opts,
 				  bch2_readpages_end_io);
@@ -366,7 +367,9 @@ int bch2_read_single_folio(struct folio *folio, struct address_space *mapping)
 
 	bch2_inode_opts_get_inode(c, &inode->ei_inode, &opts);
 
-	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ, GFP_KERNEL, &c->bio_read),
+	rbio = rbio_init(bio_alloc_bioset(NULL, 1, REQ_OP_READ,
+					  GFP_KERNEL|__GFP_RECLAIMABLE,
+					  &c->bio_read),
 			 c,
 			 opts,
 			 bch2_read_single_folio_end_io);
@@ -508,7 +511,7 @@ static void bch2_writepage_io_alloc(struct bch_fs *c,
 
 	w->io = container_of(bio_alloc_bioset(NULL, BIO_MAX_VECS,
 					      REQ_OP_WRITE,
-					      GFP_KERNEL,
+					      GFP_KERNEL|__GFP_RECLAIMABLE,
 					      &c->vfs.writepage_bioset),
 			     struct bch_writepage_io, op.wbio.bio);
 
@@ -730,9 +733,9 @@ do_io:
 int bch2_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct bch_fs *c = mapping->host->i_sb->s_fs_info;
-	struct bch_writepage_state *w = kzalloc(sizeof(*w), GFP_NOIO|__GFP_NOFAIL);
+	struct bch_writepage_state *w = kzalloc(sizeof(*w), GFP_NOIO|__GFP_NOFAIL|__GFP_RECLAIMABLE);
 
-	w->tmp = mempool_alloc(&c->vfs.writepage_buf_pool, GFP_NOIO);
+	w->tmp = mempool_alloc(&c->vfs.writepage_buf_pool, GFP_NOIO|__GFP_RECLAIMABLE);
 
 	bch2_inode_opts_get_inode(c, &to_bch_ei(mapping->host)->ei_inode, &w->opts);
 
@@ -774,7 +777,7 @@ int bch2_write_begin(
 	unsigned offset;
 	int ret = -ENOMEM;
 
-	res = kmalloc(sizeof(*res), GFP_KERNEL);
+	res = kmalloc(sizeof(*res), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!res)
 		return -ENOMEM;
 

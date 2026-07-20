@@ -91,7 +91,7 @@ static struct ec_dev_stripe_state *ec_dev_stripe_state_get(struct btree_trans *t
 			return s;
 		}
 
-	s = kzalloc(sizeof(*s), GFP_KERNEL);
+	s = kzalloc(sizeof(*s), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!s) {
 		s = ERR_PTR(-ENOMEM);
 	} else {
@@ -988,7 +988,7 @@ static struct ec_stripe_new *ec_new_stripe_alloc(struct bch_fs *c,
 						 unsigned nr_data, unsigned nr_parity,
 						 unsigned blocksize)
 {
-	struct ec_stripe_new *s = kzalloc(sizeof(*s), GFP_KERNEL);
+	struct ec_stripe_new *s = kzalloc(sizeof(*s), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!s)
 		return NULL;
 
@@ -1808,7 +1808,7 @@ ec_new_stripe_head_alloc(struct bch_fs *c, unsigned disk_label,
 			 unsigned algo, unsigned redundancy,
 			 enum bch_watermark watermark)
 {
-	struct ec_stripe_head *h = kzalloc(sizeof(*h), GFP_KERNEL);
+	struct ec_stripe_head *h = kzalloc(sizeof(*h), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!h)
 		return NULL;
 
