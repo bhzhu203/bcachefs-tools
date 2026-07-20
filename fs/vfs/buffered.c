@@ -283,6 +283,103 @@ err:
 	}
 }
 
+/*
+ * Like bchfs_read(), but reuses a shared btree iterator and pre-fetched
+ * snapshot across multiple folios in a readahead window, avoiding per-folio
+ * iterator allocation and snapshot lookup:
+ */
+static void bchfs_read_shared(struct btree_trans *trans,
+			      struct bch_read_bio *rbio,
+			      subvol_inum inum,
+			      struct readpages_iter *readpages_iter,
+			      struct btree_iter *iter,
+			      u32 snapshot)
+{
+	struct bch_fs *c = trans->c;
+	int flags = BCH_READ_retry_if_stale|
+		BCH_READ_may_promote;
+	int ret = 0;
+
+	rbio->subvol = inum.subvol;
+
+	struct bkey_buf sk __cleanup(bch2_bkey_buf_exit);
+	bch2_bkey_buf_init(&sk);
+
+	while (1) {
+		struct bkey_s_c k;
+		unsigned bytes, sectors;
+		s64 offset_into_extent;
+		enum btree_id data_btree = BTREE_ID_extents;
+
+		bch2_trans_begin(trans);
+
+		bch2_btree_iter_set_snapshot(iter, snapshot);
+
+		bch2_btree_iter_set_pos(iter,
+				POS(inum.inum, rbio->bio.bi_iter.bi_sector));
+
+		k = bch2_btree_iter_peek_slot(iter);
+		ret = bkey_err(k);
+		if (ret)
+			goto err;
+
+		offset_into_extent = iter->pos.offset -
+			bkey_start_offset(k.k);
+		sectors = k.k->size - offset_into_extent;
+
+		bch2_bkey_buf_reassemble(&sk, k);
+
+		ret = bch2_read_indirect_extent(trans, &data_btree,
+					&offset_into_extent, &sk);
+		if (ret)
+			goto err;
+
+		k = bkey_i_to_s_c(sk.k);
+
+		sectors = min_t(unsigned, sectors, k.k->size - offset_into_extent);
+
+		if (readpages_iter) {
+			ret = readpage_bio_extend(trans, readpages_iter, &rbio->bio, sectors,
+						  extent_partial_reads_expensive(c, k));
+			if (ret)
+				goto err;
+		}
+
+		bytes = min(sectors, bio_sectors(&rbio->bio)) << 9;
+		swap(rbio->bio.bi_iter.bi_size, bytes);
+
+		if (rbio->bio.bi_iter.bi_size == bytes)
+			flags |= BCH_READ_last_fragment;
+		else
+			flags |= BCH_READ_must_clone;
+
+		bch2_bio_page_state_set(c, &rbio->bio, k);
+
+		bch2_read_extent(trans, rbio, iter->pos,
+				 data_btree, k, offset_into_extent, flags);
+
+		if (flags & BCH_READ_last_fragment)
+			break;
+
+		swap(rbio->bio.bi_iter.bi_size, bytes);
+		bio_advance(&rbio->bio, bytes);
+err:
+		if (ret &&
+		    !bch2_err_matches(ret, BCH_ERR_transaction_restart))
+			break;
+	}
+
+	if (ret) {
+		CLASS(printbuf, buf)();
+		bch2_read_err_msg_trans(trans, &buf, rbio, iter->pos);
+		prt_printf(&buf, "data read error: %s", bch2_err_str(ret));
+		bch_err_ratelimited(c, "%s", buf.buf);
+
+		rbio->ret = ret;
+		bio_endio(&rbio->bio);
+	}
+}
+
 void bch2_readahead(struct readahead_control *ractl)
 {
 	struct bch_inode_info *inode = to_bch_ei(ractl->mapping->host);
@@ -314,6 +411,26 @@ void bch2_readahead(struct readahead_control *ractl)
 	}
 
 	struct btree_trans *trans = bch2_trans_get(c);
+
+	/*
+	 * Fetch the snapshot once for the entire readahead window, and use
+	 * a single shared btree iterator for all folios.  This avoids
+	 * per-folio snapshot lookup and iterator allocation, and lets the
+	 * btree path be reused across sequential folios — reducing btree
+	 * traversal overhead so bios are submitted in a tighter loop for
+	 * better NCQ utilization on HDD:
+	 */
+	bch2_trans_begin(trans);
+	u32 snapshot;
+	ret = bch2_subvolume_get_snapshot(trans, inode_inum(inode).subvol, &snapshot);
+	if (ret)
+		goto out_trans;
+
+	struct btree_iter iter;
+	__bch2_trans_iter_init(trans, &iter, BTREE_ID_extents,
+			       POS(inode_inum(inode).inum, 0),
+			       BTREE_ITER_slots|BTREE_ITER_prefetch);
+
 	while ((folio = readpage_iter_peek(&readpages_iter))) {
 		unsigned n = min_t(unsigned,
 				   readpages_iter.folios.nr -
@@ -332,10 +449,13 @@ void bch2_readahead(struct readahead_control *ractl)
 		rbio->bio.bi_iter.bi_sector = folio_sector(folio);
 		bio_add_folio_nofail(&rbio->bio, folio, folio_size(folio), 0);
 
-		bchfs_read(trans, rbio, inode_inum(inode),
-			   &readpages_iter);
+		bchfs_read_shared(trans, rbio, inode_inum(inode),
+				  &readpages_iter, &iter, snapshot);
 		bch2_trans_unlock(trans);
 	}
+
+	bch2_trans_iter_exit(&iter);
+out_trans:
 	bch2_trans_put(trans);
 
 	bch2_pagecache_add_put(inode);
