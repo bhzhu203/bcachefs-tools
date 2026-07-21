@@ -567,7 +567,8 @@ static struct bch_inode_info *__bch2_new_inode(struct bch_fs *c, gfp_t gfp)
 	mutex_init(&inode->ei_quota_lock);
 	memset(&inode->ei_devs_need_flush, 0, sizeof(inode->ei_devs_need_flush));
 	INIT_DELAYED_WORK(&inode->ei_writeback_timer, bch2_vfs_writeback_fn);
-	inode->ei_last_ra_end = 0;
+	inode->ei_ra_end[0] = 0;
+	inode->ei_ra_end[1] = 0;
 	inode->ei_random_ra_count = 0;
 
 	if (unlikely(inode_init_always_gfp(c->vfs_sb, &inode->v, gfp))) {

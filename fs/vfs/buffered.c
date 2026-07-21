@@ -431,12 +431,13 @@ void bch2_readahead(struct readahead_control *ractl)
 		return;
 
 	/*
-	 * Random read detection (HDD only): sequential readers produce
-	 * readahead windows adjacent to the previous window's end, while
-	 * random readers jump around.  After enough consecutive jumps,
-	 * truncate the window to the first (demand) folio so speculative
-	 * readahead doesn't waste HDD seeks; reverted folios go back to
-	 * the ractl, where the core readahead code drops them:
+	 * Random read detection (HDD only): a window is sequential when it
+	 * starts near the end of either of the last two windows — tracking
+	 * two streams keeps interleaved sequential readers of one file
+	 * from looking random.  After enough consecutive misses, truncate
+	 * the window to the first (demand) folio so speculative readahead
+	 * doesn't waste HDD seeks; reverted folios go back to the ractl,
+	 * where the core readahead code drops them:
 	 */
 	if (readpages_iter.folios.nr &&
 	    !bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX)) {
@@ -446,31 +447,50 @@ void bch2_readahead(struct readahead_control *ractl)
 		unsigned long this_start = folio_sector(first);
 		unsigned long this_end = folio_sector(last) +
 			(folio_size(last) >> 9);
+		long delta[2];
+		int slot = -1;
+		unsigned i;
 
-		if (inode->ei_last_ra_end) {
-			long delta = (long) this_start -
-				(long) inode->ei_last_ra_end;
-
-			if (delta < -64 || delta > 512) {
-				if (++inode->ei_random_ra_count > 4 &&
-				    readpages_iter.folios.nr > 1) {
-					unsigned i;
-
-					for (i = readpages_iter.folios.nr - 1;
-					     i > 0; i--) {
-						readpages_iter_folio_revert(ractl,
-							readpages_iter.folios.data[i]);
-						folio_get(readpages_iter.folios.data[i]);
-					}
-					readpages_iter.folios.nr = 1;
-					this_end = folio_sector(first) +
-						(folio_size(first) >> 9);
-				}
-			} else {
-				inode->ei_random_ra_count = 0;
+		for (i = 0; i < 2; i++) {
+			delta[i] = (long) this_start -
+				(long) inode->ei_ra_end[i];
+			if (inode->ei_ra_end[i] &&
+			    delta[i] >= -64 && delta[i] <= 512) {
+				slot = i;
+				break;
 			}
 		}
-		inode->ei_last_ra_end = this_end;
+
+		if (slot >= 0) {
+			/* continuing a tracked stream: */
+			inode->ei_random_ra_count = 0;
+		} else if (!inode->ei_ra_end[0]) {
+			slot = 0;
+		} else if (!inode->ei_ra_end[1]) {
+			slot = 1;
+		} else {
+			/*
+			 * Adjacent to neither tracked stream: count the
+			 * miss, and track this position in place of the
+			 * farther stream so a new sequential region can
+			 * lock back in:
+			 */
+			slot = abs(delta[0]) < abs(delta[1]) ? 1 : 0;
+
+			if (++inode->ei_random_ra_count > 4 &&
+			    readpages_iter.folios.nr > 1) {
+				for (i = readpages_iter.folios.nr - 1;
+				     i > 0; i--) {
+					readpages_iter_folio_revert(ractl,
+						readpages_iter.folios.data[i]);
+					folio_get(readpages_iter.folios.data[i]);
+				}
+				readpages_iter.folios.nr = 1;
+				this_end = folio_sector(first) +
+					(folio_size(first) >> 9);
+			}
+		}
+		inode->ei_ra_end[slot] = this_end;
 	}
 
 	/*
