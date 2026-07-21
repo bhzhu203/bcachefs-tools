@@ -88,11 +88,12 @@ struct bch_inode_info {
 	struct delayed_work	ei_writeback_timer;
 
 	/*
-	 * Random read detection (HDD only): track the end sector of the
-	 * previous readahead window; suppress speculative readahead when
-	 * requests keep landing far from it:
+	 * Random read detection (HDD only): track the end sectors of the
+	 * last two readahead windows, so two interleaved sequential
+	 * streams aren't mistaken for random access; suppress speculative
+	 * readahead when requests keep landing far from both:
 	 */
-	unsigned long		ei_last_ra_end;
+	unsigned long		ei_ra_end[2];
 	unsigned int		ei_random_ra_count;
 };
 
