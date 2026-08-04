@@ -505,12 +505,20 @@ int bch2_move_ratelimit(struct moving_context *ctxt)
 	 * writes regardless of ioprio), and can delay journal pin freeing.
 	 * Use limit/2 (not lower) so reconcile still makes progress during
 	 * normal foreground IO bursts.
+	 *
+	 * Drop btree locks while waiting: holding them deadlocks against
+	 * foreground writers blocked upgrading to write on the same nodes,
+	 * whose queued writes keep nr_in_flight_inner high.
 	 */
-	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX))
+	if (!bitmap_empty(c->devs_rotational.d, BCH_SB_MEMBERS_MAX) &&
+	    atomic_long_read(&c->btree.cache.nr_in_flight_inner) >=
+	    BTREE_WRITE_IO_LIMIT(c) / 2) {
+		bch2_trans_unlock_long(ctxt->trans);
 		closure_wait_event(&c->btree.cache.nr_in_flight_wait,
 			(is_kthread && kthread_should_stop()) ||
 			atomic_long_read(&c->btree.cache.nr_in_flight_inner) <
 			BTREE_WRITE_IO_LIMIT(c) / 2);
+	}
 
 	return 0;
 }
