@@ -3975,6 +3975,31 @@ void bch2_trans_throttle_update(struct bch_fs *c)
 	}
 }
 
+/*
+ * Release the admission throttle slot without putting the transaction.
+ * Must be called before sleeping on a resource that other throttled
+ * transactions need to make progress (e.g. waiting for btree writes to
+ * complete: the btree write completion workers need throttle slots to
+ * run, so sleeping committers holding all the slots deadlock them).
+ * The slot is not reacquired; the transaction continues unthrottled
+ * until bch2_trans_put().
+ */
+void bch2_trans_throttle_release(struct btree_trans *trans)
+{
+	struct bch_fs *c = trans->c;
+
+	if (unlikely(trans->throttled)) {
+		struct semaphore *pool = trans->throttle_bg
+			? &c->btree.trans.throttle_bg
+			: &c->btree.trans.throttle_fg;
+
+		trans->throttled = false;
+		atomic_dec(&c->btree.trans.nr_active);
+		up(pool);
+		atomic_dec(&c->btree.trans.per_proc_slots[trans->throttle_bucket]);
+	}
+}
+
 struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	__acquires(&c->btree.trans.barrier)
 {

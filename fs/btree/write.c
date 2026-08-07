@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/ioprio.h>
+#include <linux/sched/mm.h>
 
 #include "bcachefs.h"
 
@@ -130,7 +131,17 @@ static void btree_node_write_work(struct work_struct *work)
 	struct bch_fs *c	= wbio->wbio.c;
 	struct btree *b		= wbio->wbio.bio.bi_private;
 
+	/*
+	 * Bypass the transaction admission throttle (PF_MEMALLOC tasks skip
+	 * it entirely): btree write completion must never wait for a throttle
+	 * slot. Committers sleeping on btree write backpressure hold slots
+	 * while waiting for this work to run — if it had to wait for a slot
+	 * in turn, they deadlock.
+	 */
+	unsigned saved_memalloc_flags = memalloc_flags_save(PF_MEMALLOC);
 	CLASS(btree_trans, trans)(c);
+	memalloc_flags_restore(saved_memalloc_flags);
+
 	int shard = btree_node_shard(c, b);
 	if (shard >= 0)
 		trans->shard_cpu = c->inode_shard_cpu[shard];
