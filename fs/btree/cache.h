@@ -188,13 +188,20 @@ static inline bool bch2_btree_cache_should_throttle(struct bch_fs *c)
 	return READ_ONCE(c->btree.cache.should_throttle);
 }
 
+/*
+ * Throttle only on in-flight inner node writes. Upstream also throttles when
+ * the dirty ratio exceeds 3/4, but that term self-locks in this tree: its
+ * escape hatches are shrinker eviction writes of dirty nodes and journal
+ * reclaim progress, and the HDD memory tuning (seeks=6, no proactive btree
+ * cache shrinking) disables the former while journal reclaim can stall on
+ * unflushed key cache pins — leaving the dirty ratio pinned at the threshold
+ * with in-flight writes at 0 and all normal-watermark commits gated
+ * indefinitely. Journal space backpressure still bounds dirty node growth.
+ */
 static inline void bch2_btree_cache_update_throttle(struct bch_fs *c)
 {
 	struct bch_fs_btree_cache *bc = &c->btree.cache;
-	size_t live	= btree_cache_nr_live(bc);
-	size_t dirty	= btree_cache_nr_dirty(bc);
-	bool throttle	= atomic_long_read(&bc->nr_in_flight_inner) > BTREE_WRITE_IO_LIMIT(c) ||
-			  (live && dirty > live * 3 / 4);
+	bool throttle	= atomic_long_read(&bc->nr_in_flight_inner) > BTREE_WRITE_IO_LIMIT(c);
 
 	if (throttle != READ_ONCE(bc->should_throttle))
 		WRITE_ONCE(bc->should_throttle, throttle);
