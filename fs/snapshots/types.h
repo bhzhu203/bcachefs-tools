@@ -8,6 +8,7 @@
 #include "btree/bbpos_types.h"
 #include "init/progress.h"
 #include "util/darray.h"
+#include "util/util.h"
 
 DEFINE_DARRAY_NAMED(snapshot_id_list, u32);
 
@@ -71,6 +72,8 @@ struct snapshot_delete {
 	bool				running;
 	unsigned			version;
 	struct progress_indicator	progress;
+	/* paces per-key migration when the deletion backlog is small: */
+	struct bch_ratelimit		key_rate;
 };
 
 /*
