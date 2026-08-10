@@ -90,6 +90,8 @@ pub struct snapshot_delete {
     pub running: bool,
     pub version: c_uint,
     pub progress: c::progress_indicator,
+    /* paces per-key migration when the deletion backlog is small: */
+    pub key_rate: c::bch_ratelimit,
 }
 c_default!(snapshot_delete);
 
