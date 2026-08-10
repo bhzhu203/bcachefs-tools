@@ -578,7 +578,8 @@ bool bch2_copygc_can_make_progress(struct bch_dev *ca)
  * when the device still has plenty of free space - rather, we want copygc to
  * smoothly run every so often and continually reduce the amount of fragmented
  * space as the device fills up - so we increase the allowance by half the
- * current free space.
+ * current free space (three quarters while snapshot deletion is running -
+ * see below).
  */
 s64 bch2_copygc_dev_wait_amount(struct bch_dev *ca)
 {
@@ -606,9 +607,25 @@ s64 bch2_copygc_dev_wait_amount(struct bch_dev *ca)
 	if (wait > 0)
 		return wait;
 
-	s64 fragmented_allowed = ((__dev_buckets_free(ca, usage, BCH_WATERMARK_stripe) +
-				   bch2_dev_buckets_reserved(ca, BCH_WATERMARK_stripe)) *
-				  ca->mi.bucket_size + leaving) >> 1;
+	/*
+	 * Half of the current free space - except while snapshot deletion is
+	 * running: an invalidation storm from a large deletion can push
+	 * fragmented space far past the normal allowance, and we don't want
+	 * copygc charging into the middle of it; widen the allowance to three
+	 * quarters of free space so copygc defers until the storm passes. The
+	 * allowance converges to the reserved-space value as the device fills
+	 * up either way.
+	 */
+	s64 free_allowed = __dev_buckets_free(ca, usage, BCH_WATERMARK_stripe) *
+				ca->mi.bucket_size;
+	if (READ_ONCE(c->snapshots.delete.running))
+		free_allowed = free_allowed * 3 / 4;
+	else
+		free_allowed /= 2;
+
+	s64 fragmented_allowed = ((bch2_dev_buckets_reserved(ca, BCH_WATERMARK_stripe) *
+				   ca->mi.bucket_size + leaving) >> 1) +
+				 free_allowed;
 	s64 fragmented = 0;
 
 	for (unsigned i = 0; i < BCH_DATA_NR; i++)
