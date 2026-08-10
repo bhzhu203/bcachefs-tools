@@ -961,6 +961,35 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 	return bch2_delete_dead_snapshot_key(trans, iter, k, dying->live_child);
 }
 
+/*
+ * Pacing for small deletions: when the backlog of dying snapshot nodes is
+ * small (steady state - snapshots deleted at roughly the rate they're
+ * created), cap the migration key rate so one snapshot deletion doesn't
+ * monopolize the journal and btree io. When the backlog grows (deletion
+ * falling behind), go unthrottled to catch up - pacing there would just make
+ * the backlog grow forever.
+ */
+#define SNAPSHOT_DELETE_RATELIMIT_KEYS_PER_SEC	(50U * 1000)
+#define SNAPSHOT_DELETE_BACKLOG_THRESHOLD	4
+
+static void snapshot_delete_ratelimit(struct bch_fs *c)
+{
+	struct snapshot_delete *d = &c->snapshots.delete;
+
+	if (!d->key_rate.rate)
+		return;
+	if (d->delete_leaves.nr + d->delete_interior.nr > SNAPSHOT_DELETE_BACKLOG_THRESHOLD)
+		return;
+
+	bch2_ratelimit_increment(&d->key_rate, 1);
+
+	u64 delay = bch2_ratelimit_delay(&d->key_rate);
+	if (delay) {
+		schedule_timeout_interruptible(delay);
+		try_to_freeze();
+	}
+}
+
 static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum btree_id btree)
 {
 	struct bch_fs *c = trans->c;
@@ -973,6 +1002,7 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
 			&res.r, NULL, BCH_TRANS_COMMIT_no_enospc, ({
 		bch2_progress_update_iter(trans, &d->progress, &iter);
+		snapshot_delete_ratelimit(c);
 
 		bch2_disk_reservation_put(c, &res.r);
 		delete_dead_snapshots_process_key(trans, &iter, k);
@@ -1013,6 +1043,7 @@ static int delete_dead_snapshot_keys_range(struct btree_trans *trans,
 			btree, start, end,
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
 			res, NULL, BCH_TRANS_COMMIT_no_enospc, ({
+		snapshot_delete_ratelimit(c);
 		bch2_disk_reservation_put(c, res);
 		delete_dead_snapshots_process_key(trans, &iter, k);
 	}));
@@ -1133,6 +1164,7 @@ static int delete_dead_snapshot_keys_v2(struct btree_trans *trans)
 			BTREE_ID_inodes, POS_MIN,
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
 			&res.r, NULL, BCH_TRANS_COMMIT_no_enospc, ({
+		snapshot_delete_ratelimit(c);
 		bch2_disk_reservation_put(c, &res.r);
 		delete_dead_snapshots_process_key(trans, &iter, k);
 	})));
@@ -1500,6 +1532,11 @@ int __bch2_delete_dead_snapshots(struct bch_fs *c)
 
 	d->running = true;
 	d->progress.pos = BBPOS_MIN;
+
+	d->key_rate = (struct bch_ratelimit) {
+		.rate = SNAPSHOT_DELETE_RATELIMIT_KEYS_PER_SEC,
+	};
+	bch2_ratelimit_reset(&d->key_rate);
 
 	int ret = delete_dead_snapshots_locked(c);
 	if (snapshot_delete_refused(ret))
