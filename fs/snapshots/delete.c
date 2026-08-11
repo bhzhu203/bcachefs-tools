@@ -978,7 +978,11 @@ static void snapshot_delete_ratelimit(struct bch_fs *c)
 
 	if (!d->key_rate.rate)
 		return;
-	if (d->delete_leaves.nr + d->delete_interior.nr > SNAPSHOT_DELETE_BACKLOG_THRESHOLD)
+	if (d->delete_leaves.nr + d->delete_interior.nr >= SNAPSHOT_DELETE_BACKLOG_THRESHOLD)
+		return;
+
+	/* Don't sleep before mount is complete — it blocks mount.bcachefs */
+	if (!test_bit(BCH_FS_started, &c->flags))
 		return;
 
 	bch2_ratelimit_increment(&d->key_rate, 1);
