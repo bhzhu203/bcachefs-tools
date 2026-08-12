@@ -175,6 +175,7 @@ static inline u32 bch2_snapshot_nth_parent(struct bch_fs *c, u32 id, u32 n)
 }
 
 u32 bch2_snapshot_skiplist_get(struct bch_fs *, u32);
+bool bch2_snapshot_is_deleted(struct bch_fs *, u32);
 
 static inline u32 bch2_snapshot_root(struct bch_fs *c, u32 id)
 {

@@ -427,6 +427,13 @@ static int bch2_move_extent_pred(struct moving_context *ctxt,
 	struct btree_trans *trans = ctxt->trans;
 	struct bch_fs *c = trans->c;
 
+	/*
+	 * Extents owned by a snapshot being deleted are about to be freed or
+	 * migrated: moving them just churns metadata for doomed data.
+	 */
+	if (bch2_snapshot_is_deleted(c, k.k->p.snapshot))
+		return 0;
+
 	struct bch_inode_opts opts;
 	try(bch2_bkey_get_io_opts(trans, snapshot_io_opts, k, &opts));
 	try(bch2_update_reconcile_opts(trans, snapshot_io_opts, &opts, iter, level, k,
