@@ -1548,6 +1548,31 @@ static bool snapshot_delete_refused(int ret)
 }
 
 /*
+ * True if keys owned by @id are being dropped or migrated by snapshot
+ * deletion that's currently running. Data movers should skip such extents:
+ * moving doomed data wastes IO, and moving migrating keys races the deletion
+ * walker - surviving data can be defragmented after deletion completes.
+ *
+ * The lists are only written during collection and freed at exit, both under
+ * progress_lock, so reading them under it is safe; the running check skips
+ * the lock entirely when no deletion is in flight.
+ */
+bool bch2_snapshot_is_deleted(struct bch_fs *c, u32 id)
+{
+	struct snapshot_delete *d = &c->snapshots.delete;
+	bool ret = false;
+
+	if (!id || !READ_ONCE(d->running))
+		return false;
+
+	scoped_guard(mutex, &d->progress_lock)
+		ret = snapshot_list_has_id(&d->delete_leaves, id) ||
+		      interior_delete_has_id(&d->delete_interior, id);
+
+	return ret;
+}
+
+/*
  * Serialization is recovery.run_lock, asserted below: the delete_dead_snapshots
  * pass .fn runs under it (the framework holds run_lock while running passes),
  * and the sysfs force-trigger takes it explicitly. So no separate lock is
@@ -1559,7 +1584,7 @@ int __bch2_delete_dead_snapshots(struct bch_fs *c)
 
 	lockdep_assert_held(&c->recovery.run_lock);
 
-	d->running = true;
+	WRITE_ONCE(d->running, true);
 	d->progress.pos = BBPOS_MIN;
 
 	d->key_rate = (struct bch_ratelimit) {
@@ -1577,7 +1602,7 @@ int __bch2_delete_dead_snapshots(struct bch_fs *c)
 		darray_exit(&d->delete_interior);
 		darray_exit(&d->delete_leaves);
 		darray_exit(&d->eytzinger_delete_list);
-		d->running = false;
+		WRITE_ONCE(d->running, false);
 	}
 
 	bch2_recovery_pass_set_no_ratelimit(c, BCH_RECOVERY_PASS_check_snapshots);
