@@ -22,6 +22,8 @@ int bch2_snapshot_tree_keys_to_text(struct printbuf *, struct btree_trans *, u32
 
 int bch2_check_snapshot_needs_deletion(struct btree_trans *, struct bkey_s_c, u32 *);
 
+bool bch2_snapshot_is_deleted(struct bch_fs *, u32);
+
 #define bch2_bkey_ops_snapshot ((struct bkey_ops) {		\
 	.key_validate	= bch2_snapshot_validate,		\
 	.val_to_text	= bch2_snapshot_key_to_text,		\
