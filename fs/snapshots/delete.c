@@ -972,6 +972,14 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 #define SNAPSHOT_DELETE_RATELIMIT_KEYS_PER_SEC	(50U * 1000)
 #define SNAPSHOT_DELETE_BACKLOG_THRESHOLD	4
 
+/*
+ * Keys staged per transaction when migrating/dropping a dying snapshot's keys.
+ * Bounded so the batch can't exhaust the trans bump allocator or hold an
+ * unbounded number of btree paths, but large enough to amortize the per-commit
+ * journal-entry/path-lock cost over many keys.
+ */
+#define SNAPSHOT_DELETE_COMMIT_BATCH		32
+
 static void snapshot_delete_ratelimit(struct bch_fs *c)
 {
 	struct snapshot_delete *d = &c->snapshots.delete;
@@ -1036,21 +1044,89 @@ static int delete_dead_snapshot_keys_v1(struct btree_trans *trans)
 	return 0;
 }
 
+static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
+					     enum btree_id btree,
+					     struct bpos start, struct bpos end,
+					     struct disk_reservation *res)
+{
+	struct bch_fs *c = trans->c;
+	const unsigned iter_flags = BTREE_ITER_prefetch|BTREE_ITER_all_snapshots;
+
+	CLASS(btree_iter, iter)(trans, btree, start, iter_flags);
+
+	struct bpos batch_start = start;
+	unsigned nr = 0;
+	int ret = 0;
+
+	bch2_trans_begin(trans);
+
+	while (true) {
+		if (!nr)
+			batch_start = iter.pos;
+
+		struct bkey_s_c k = bch2_btree_iter_peek_max_type(&iter, end, iter_flags);
+
+		ret = k.k ? bkey_err(k) : 0;
+
+		if (k.k && !ret) {
+			if (!nr)
+				batch_start = k.k->p;
+
+			snapshot_delete_ratelimit(c);
+			ret = delete_dead_snapshots_process_key(trans, &iter, k);
+
+			if (!ret) {
+				nr++;
+				if (nr < SNAPSHOT_DELETE_COMMIT_BATCH) {
+					bch2_btree_iter_advance_type(&iter, iter_flags);
+					continue;
+				}
+			}
+		}
+
+		/* A full batch or the end of the range: commit what's staged. */
+		if (ret == 0 && nr) {
+			ret = bch2_trans_commit(trans, res, NULL,
+						BCH_TRANS_COMMIT_no_enospc);
+			if (!ret) {
+				bch2_disk_reservation_put(c, res);
+				nr = 0;
+				if (!k.k)
+					break;
+				bch2_trans_begin(trans);
+				continue;
+			}
+		}
+
+		if (!k.k && !nr)
+			break;
+
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
+			/*
+			 * The staged batch was dropped by the restart: rewind to its
+			 * first key and re-drive. Already-committed keys were removed
+			 * at their source, so the re-driven range skips them.
+			 */
+			trans->begin_may_drop_updates = true;
+			bch2_trans_begin(trans);
+			trans->begin_may_drop_updates = false;
+			bch2_btree_iter_set_pos(&iter, batch_start);
+			nr = 0;
+			continue;
+		}
+
+		return ret;
+	}
+
+	return 0;
+}
+
 static int delete_dead_snapshot_keys_range(struct btree_trans *trans,
 					   struct disk_reservation *res,
 					   enum btree_id btree,
 					   struct bpos start, struct bpos end)
 {
-	struct bch_fs *c = trans->c;
-
-	return for_each_btree_key_max_commit(trans, iter,
-			btree, start, end,
-			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
-			res, NULL, BCH_TRANS_COMMIT_no_enospc, ({
-		snapshot_delete_ratelimit(c);
-		bch2_disk_reservation_put(c, res);
-		delete_dead_snapshots_process_key(trans, &iter, k);
-	}));
+	return delete_dead_snapshot_keys_batched(trans, btree, start, end, res);
 }
 
 static int delete_dead_snapshot_keys_v2(struct btree_trans *trans)
@@ -1164,14 +1240,8 @@ static int delete_dead_snapshot_keys_v2(struct btree_trans *trans)
 
 	/* Then the inodes */
 
-	try(for_each_btree_key_commit(trans, iter,
-			BTREE_ID_inodes, POS_MIN,
-			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
-			&res.r, NULL, BCH_TRANS_COMMIT_no_enospc, ({
-		snapshot_delete_ratelimit(c);
-		bch2_disk_reservation_put(c, &res.r);
-		delete_dead_snapshots_process_key(trans, &iter, k);
-	})));
+	try(delete_dead_snapshot_keys_batched(trans, BTREE_ID_inodes,
+					      POS_MIN, SPOS_MAX, &res.r));
 
 	return 0;
 }
