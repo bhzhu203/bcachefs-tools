@@ -948,6 +948,15 @@ bool bch2_btree_node_upgrade(struct btree_trans *trans,
 	if (race_fault())
 		return false;
 
+	/*
+	 * Same dangling-pointer hazard as __bch2_btree_node_relock(): an
+	 * unlocked path's cached node may have been freed and its struct btree
+	 * recycled for a node of a different btree; the seq match below is not
+	 * proof of identity. Fail so the caller retraverses from the root.
+	 */
+	if (unlikely(b->c.btree_id != path->btree_id))
+		return false;
+
 	if (btree_node_locked(path, level)
 	    ? six_lock_tryupgrade(&b->c.lock)
 	    : six_relock_type(&b->c.lock, SIX_LOCK_intent, path->l[level].lock_seq))

@@ -260,7 +260,13 @@ struct trans_for_each_path_inorder_iter {
 static inline bool __path_has_node(const struct btree_path *path,
 				   const struct btree *b)
 {
-	return path->l[b->c.level].b == b &&
+	/*
+	 * An unlocked path's cached node pointer may dangle if the node was
+	 * freed and its struct btree recycled for a node of a different btree;
+	 * the lock seq match alone is not proof of identity.
+	 */
+	return path->btree_id == b->c.btree_id &&
+		path->l[b->c.level].b == b &&
 		btree_node_lock_seq_matches(path, b, b->c.level);
 }
 
