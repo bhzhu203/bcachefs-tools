@@ -1027,12 +1027,14 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 #define SNAPSHOT_DELETE_BACKLOG_THRESHOLD	4
 
 /*
- * Keys staged per transaction when migrating/dropping a dying snapshot's keys.
- * Bounded so the batch can't exhaust the trans bump allocator or hold an
- * unbounded number of btree paths, but large enough to amortize the per-commit
- * journal-entry/path-lock cost over many keys.
+ * Commit batching for migrating/dropping a dying snapshot's keys: the memory
+ * watermark is the real throttle - the same policy as
+ * bch2_trans_commit_lazy_if_full(): commit once a quarter of the transaction
+ * bump allocator is used, leaving headroom for the commit path itself, so the
+ * batch adapts to key size. The count is only an insurance cap, bounding
+ * journal entry size and lock fan-out if staged updates are tiny.
  */
-#define SNAPSHOT_DELETE_COMMIT_BATCH		32
+#define SNAPSHOT_DELETE_COMMIT_BATCH_MAX	1024
 
 static void snapshot_delete_ratelimit(struct bch_fs *c)
 {
@@ -1131,14 +1133,15 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 
 			if (!ret) {
 				nr++;
-				if (nr < SNAPSHOT_DELETE_COMMIT_BATCH) {
+				if (nr < SNAPSHOT_DELETE_COMMIT_BATCH_MAX &&
+				    trans->mem_top < BTREE_TRANS_MEM_MAX / 4) {
 					bch2_btree_iter_advance_type(&iter, iter_flags);
 					continue;
 				}
 			}
 		}
 
-		/* A full batch or the end of the range: commit what's staged. */
+		/* Batch full, memory watermark hit, or end of range: commit. */
 		if (ret == 0 && nr) {
 			ret = bch2_trans_commit(trans, res, NULL,
 						BCH_TRANS_COMMIT_no_enospc);
