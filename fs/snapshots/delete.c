@@ -20,6 +20,39 @@
 #include <linux/random.h>
 
 /*
+ * Runtime A/B toggle for the v2 snapshot deletion scan: 0 forces the v1
+ * per-key path. The on-disk incompat feature still forces v1 on filesystems
+ * that predate v2.
+ */
+static bool bch_snapshot_delete_v2 = true;
+
+static int bch_snapshot_delete_v2_set(const char *val, const struct kernel_param *kp)
+{
+	bool new;
+	int ret = kstrtobool(val, &new);
+
+	if (ret)
+		return ret;
+
+	if (new != READ_ONCE(bch_snapshot_delete_v2)) {
+		pr_info("bcachefs: snapshot deletion scan switched to %s\n",
+			new ? "v2" : "v1");
+		WRITE_ONCE(bch_snapshot_delete_v2, new);
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops bch_snapshot_delete_v2_ops = {
+	.set	= bch_snapshot_delete_v2_set,
+	.get	= param_get_bool,
+};
+
+module_param_cb(snapshot_delete_v2, &bch_snapshot_delete_v2_ops,
+		&bch_snapshot_delete_v2, 0644);
+MODULE_PARM_DESC(snapshot_delete_v2,
+		 "Use the v2 snapshot deletion scan (default on; 0 forces the v1 path)");
+
+/*
  * Snapshot trees:
  *
  * A node in a snapshot tree references keys with that snapshot ID, and all keys
@@ -600,7 +633,8 @@ int bch2_snapshot_node_delete(struct btree_trans *trans, u32 id)
 		}
 	}
 
-	if (!bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)) {
+	if (!READ_ONCE(bch_snapshot_delete_v2) ||
+	    !bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)) {
 		/*
 		 * Retain parent/child pointers; don't destroy information if we
 		 * have to repair:
@@ -1542,7 +1576,8 @@ static int delete_dead_snapshots_locked(struct bch_fs *c)
 	try(bch2_snapshot_delete_data_to_text(&node_data, c, d));
 	bch_info(c, "%s", node_data.buf);
 
-	try(!bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)
+	try(READ_ONCE(bch_snapshot_delete_v2) &&
+	    !bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)
 	    ? delete_dead_snapshot_keys_v2(trans)
 	    : delete_dead_snapshot_keys_v1(trans));
 
