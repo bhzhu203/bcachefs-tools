@@ -896,6 +896,25 @@ bool __bch2_btree_node_relock(struct btree_trans *trans,
 	if (race_fault())
 		goto fail;
 
+	/*
+	 * Debug probe (snapshot deletion path/pos crossing): the cached node
+	 * pointer is dangling if the node was freed and its struct btree
+	 * recycled for a node of a different btree. six_relock_type() would
+	 * then succeed on the recycled node and permanently attach the path
+	 * to the wrong btree. Detect it, capture the caller, and fail the
+	 * relock so the path is retraversed from the root instead.
+	 */
+	if (unlikely(b->c.btree_id != path->btree_id)) {
+		pr_err("bcachefs: relock on node of wrong btree (probe): path idx %u btree %u level %u pos %llu:%llu:%u | node btree %u level %u lock_seq %u\n",
+		       (unsigned)(path - trans->paths),
+		       path->btree_id, level,
+		       path->pos.inode, path->pos.offset, path->pos.snapshot,
+		       b->c.btree_id, b->c.level, path->l[level].lock_seq);
+		dump_stack();
+		WARN_ONCE(1, "bcachefs: relocked node belongs to different btree");
+		goto fail;
+	}
+
 	if (six_relock_type(&b->c.lock, want, path->l[level].lock_seq) ||
 	    (btree_node_lock_seq_matches(path, b, level) &&
 	     btree_node_lock_increment(trans, &b->c, level, want))) {

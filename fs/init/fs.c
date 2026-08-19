@@ -59,6 +59,8 @@
 #include "journal/reclaim.h"
 #include "journal/seq_blacklist.h"
 
+#include "oops_log.h"
+
 #include "sb/clean.h"
 #include "sb/counters.h"
 #include "sb/downgrade.h"
@@ -1734,6 +1736,7 @@ struct bch_fs *bch2_fs_open(darray_const_str *devices,
 
 static void bcachefs_exit(void)
 {
+	bch2_oops_log_exit();
 	bch2_debug_exit();
 	bch2_vfs_exit();
 	bch2_chardev_exit();
@@ -1744,6 +1747,8 @@ static void bcachefs_exit(void)
 
 static int __init bcachefs_init(void)
 {
+	bch2_oops_log_init();
+
 	bch2_bkey_pack_test();
 
 	bch2_dirent_init();

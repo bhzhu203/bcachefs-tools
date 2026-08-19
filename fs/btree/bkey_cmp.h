@@ -93,15 +93,49 @@ int __bch2_bkey_cmp_packed_format_checked_inlined(const struct bkey_packed *l,
 	const struct bkey_format *f = &b->format;
 	int ret;
 
-	EBUG_ON(!bkey_packed(l) || !bkey_packed(r));
-	EBUG_ON(b->nr_key_bits != bkey_format_key_bits(f));
+	/*
+	 * Demoted EBUG_ONs: a racing/reused btree node can present keys or
+	 * format state that violates these preconditions. Fall back to the
+	 * same mixed packed/unpacked handling as bch2_bkey_cmp_packed_inlined
+	 * below instead of BUGging the machine.
+	 */
+	if (unlikely(!bkey_packed(l) || !bkey_packed(r))) {
+		struct bkey unpacked;
+
+		pr_err("bcachefs: format checked cmp on non packed key (demoted EBUG_ON): l packed %d r packed %d btree %u level %u\n",
+		       !!bkey_packed(l), !!bkey_packed(r),
+		       b->c.btree_id, b->c.level);
+		WARN_ONCE(1, "bcachefs: non packed key in format checked cmp");
+
+		if (bkey_packed(l)) {
+			__bkey_unpack_key_format_checked(b, &unpacked, l);
+			return bpos_cmp(unpacked.p, ((struct bkey *) r)->p);
+		}
+		if (bkey_packed(r)) {
+			__bkey_unpack_key_format_checked(b, &unpacked, r);
+			return bpos_cmp(((struct bkey *) l)->p, unpacked.p);
+		}
+		return bpos_cmp(((struct bkey *) l)->p, ((struct bkey *) r)->p);
+	}
+
+	if (unlikely(b->nr_key_bits != bkey_format_key_bits(f))) {
+		pr_err("bcachefs: node nr_key_bits mismatch (demoted EBUG_ON): btree %u level %u nr_key_bits %u format key bits %u\n",
+		       b->c.btree_id, b->c.level, b->nr_key_bits,
+		       bkey_format_key_bits(f));
+		WARN_ONCE(1, "bcachefs: btree node nr_key_bits/format mismatch");
+	}
 
 	ret = __bkey_cmp_bits(high_word(f, l),
 			      high_word(f, r),
 			      b->nr_key_bits);
 
-	EBUG_ON(ret != bpos_cmp(bkey_unpack_pos(b, l),
-				bkey_unpack_pos(b, r)));
+	if (unlikely(ret != bpos_cmp(bkey_unpack_pos(b, l),
+				     bkey_unpack_pos(b, r)))) {
+		pr_err("bcachefs: packed key cmp mismatch (demoted EBUG_ON): packed %d unpacked %d\n",
+		       ret, bpos_cmp(bkey_unpack_pos(b, l),
+				     bkey_unpack_pos(b, r)));
+		WARN_ONCE(1, "bcachefs: packed/unpacked key compare mismatch");
+	}
 	return ret;
 }
 

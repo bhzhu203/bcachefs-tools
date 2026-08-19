@@ -891,13 +891,46 @@ void bch2_trans_node_verify_not_in_iters(struct btree_trans *trans, struct btree
  * A btree node has been modified in such a way as to invalidate iterators - fix
  * them:
  */
+static void __bch2_trans_paths_to_text(struct printbuf *, struct btree_trans *, bool);
+
 void bch2_trans_node_reinit_iter(struct btree_trans *trans, struct btree *b)
 {
 	struct btree_path *path;
 	unsigned i;
 
-	trans_for_each_path_with_node(trans, b, path, i)
+	trans_for_each_path_with_node(trans, b, path, i) {
+		/*
+		 * Debug probe (snapshot deletion path/pos crossing): a path
+		 * attached to this node must carry a position inside its key
+		 * range. When it doesn't, the node iter init in
+		 * __btree_path_level_init clamps to min_key and corrupts the
+		 * walk - dump the whole transaction first. nosort: sorting
+		 * would reorder the path array while we iterate it.
+		 */
+		if (unlikely(bpos_lt(path->pos, b->data->min_key) ||
+			     bpos_gt(path->pos, b->data->max_key))) {
+			pr_err("bcachefs: path outside node (probe): path idx %u btree %u pos %llu:%llu:%u | node btree %u level %u %llu:%llu:%u..%llu:%llu:%u\n",
+			       i, path->btree_id,
+			       path->pos.inode, path->pos.offset,
+			       path->pos.snapshot,
+			       b->c.btree_id, b->c.level,
+			       b->data->min_key.inode, b->data->min_key.offset,
+			       b->data->min_key.snapshot,
+			       b->data->max_key.inode, b->data->max_key.offset,
+			       b->data->max_key.snapshot);
+			/* one printk per line: records are truncated at 1KB */
+			CLASS(printbuf, buf)();
+			__bch2_trans_paths_to_text(&buf, trans, true);
+			bch2_trans_updates_to_text(&buf, trans);
+			for (char *p = buf.buf; p && *p; ) {
+				char *nl = strchrnul(p, '\n');
+				pr_err("bcachefs: %.*s\n", (int)(nl - p), p);
+				p = *nl ? nl + 1 : NULL;
+			}
+			WARN_ONCE(1, "bcachefs: btree path pos outside attached node");
+		}
 		__btree_path_level_init(trans, path, b->c.level);
+	}
 
 	bch2_trans_revalidate_updates_in_node(trans, b);
 }
@@ -1159,6 +1192,10 @@ static int btree_node_gap_err(struct btree_trans *trans,
 		}
 		prt_newline(&msg.m);
 	}
+
+	prt_str(&msg.m, "trans paths+updates (probe, unsorted):\n");
+	__bch2_trans_paths_to_text(&msg.m, trans, true);
+	bch2_trans_updates_to_text(&msg.m, trans);
 
 	bch2_prt_task_backtrace(&msg.m, current, 1, GFP_KERNEL);
 

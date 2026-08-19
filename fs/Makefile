@@ -222,6 +222,8 @@ bcachefs-y		:=			\
 	vfs/direct.o				\
 	vfs/pagecache.o
 
+bcachefs-y			+= oops_log.o
+
 ifdef CONFIG_DEBUG_FS
 	bcachefs-y += debug/async_objs.o
 endif

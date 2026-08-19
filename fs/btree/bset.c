@@ -1479,10 +1479,30 @@ void bch2_btree_node_iter_init(struct bch_fs *c, struct btree *b,
 	struct bkey_packed *packed_search = NULL;
 	struct btree_node_iter_set *pos = iter->data;
 	struct bkey_packed *k[MAX_BSETS];
+	struct bpos clamped;
 	unsigned i;
 
-	EBUG_ON(bpos_lt(*search, b->data->min_key));
-	EBUG_ON(bpos_gt(*search, b->data->max_key));
+	if (bpos_lt(*search, b->data->min_key) ||
+	    bpos_gt(*search, b->data->max_key)) {
+		pr_err("bcachefs: btree_node_iter_init search outside node (demoted EBUG_ON): btree %u level %u search %llu:%llu:%u node %llu:%llu:%u..%llu:%llu:%u\n",
+		       b->c.btree_id, b->c.level,
+		       search->inode, search->offset, search->snapshot,
+		       b->data->min_key.inode, b->data->min_key.offset,
+		       b->data->min_key.snapshot,
+		       b->data->max_key.inode, b->data->max_key.offset,
+		       b->data->max_key.snapshot);
+		WARN_ONCE(1, "bcachefs: clamping out-of-range btree node iter search");
+		/*
+		 * search aliases the caller's pos (path->pos, from
+		 * __btree_path_level_init): clamp a local copy only - writing
+		 * the node bounds back into path->pos corrupts the transaction
+		 * (observed: an inodes path's pos replaced with an extents
+		 * node's min_key, then topology error on the next traversal).
+		 */
+		clamped = bpos_lt(*search, b->data->min_key)
+			? b->data->min_key : b->data->max_key;
+		search = &clamped;
+	}
 	bset_aux_tree_verify(b);
 
 	memset(iter, 0, sizeof(*iter));

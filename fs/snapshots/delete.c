@@ -18,6 +18,18 @@
 #include "util/enumerated_ref.h"
 
 #include <linux/random.h>
+#include <linux/moduleparam.h>
+
+/*
+ * Runtime A/B toggle for the batched (v2) key migration: 0 forces the old
+ * per-key-commit v1 path. Used to isolate whether the batched path is what
+ * trips the debug-build btree assertions under concurrent load. Defaults to
+ * v2; the mid-batch commit fix is believed to be the cure.
+ */
+static bool bch_snapshot_delete_v2 = true;
+module_param_named(snapshot_delete_v2, bch_snapshot_delete_v2, bool, 0644);
+MODULE_PARM_DESC(snapshot_delete_v2,
+		 "Use the batched (v2) dead snapshot key migration (default on; v1 per-key path)");
 
 /*
  * Snapshot trees:
@@ -600,7 +612,8 @@ int bch2_snapshot_node_delete(struct btree_trans *trans, u32 id)
 		}
 	}
 
-	if (!bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)) {
+	if (!READ_ONCE(bch_snapshot_delete_v2) ||
+	    !bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)) {
 		/*
 		 * Retain parent/child pointers; don't destroy information if we
 		 * have to repair:
@@ -1009,6 +1022,10 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 
 	CLASS(disk_reservation, res)(c);
 
+	unsigned keys = 0;
+	u32 restarts0 = trans->restart_count;
+	unsigned long next_msg = jiffies + 10 * HZ;
+
 	try(for_each_btree_key_commit(trans, iter,
 			btree, POS_MIN,
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
@@ -1017,6 +1034,16 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 		snapshot_delete_ratelimit(c);
 
 		bch2_disk_reservation_put(c, &res.r);
+		keys++;
+		if (time_after(jiffies, next_msg)) {
+			next_msg = jiffies + 10 * HZ;
+			bch_info(c, "delete_dead_snapshots(v1): btree %u keys %u restarts %u at %llu:%llu",
+				 btree, keys,
+				 /* each loop iteration does bch2_trans_begin(), which also
+				  * bumps restart_count - subtract it to show real restarts */
+				 trans->restart_count - restarts0 - keys,
+				 iter.pos.inode, iter.pos.offset);
+		}
 		delete_dead_snapshots_process_key(trans, &iter, k);
 	})));
 
@@ -1056,6 +1083,9 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 
 	struct bpos batch_start = start;
 	unsigned nr = 0;
+	unsigned restarts = 0;
+	unsigned migrated = 0;
+	unsigned long next_msg = jiffies + 10 * HZ;
 	int ret = 0;
 
 	bch2_trans_begin(trans);
@@ -1073,9 +1103,27 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 				batch_start = k.k->p;
 
 			snapshot_delete_ratelimit(c);
+
+			bool had_updates = bch2_trans_has_updates(trans);
 			ret = delete_dead_snapshots_process_key(trans, &iter, k);
 
 			if (!ret) {
+				if (had_updates && !bch2_trans_has_updates(trans)) {
+					/*
+					 * process_key hit the orphaned-key repair path and
+					 * flushed the staged batch via bch2_trans_commit_lazy:
+					 * all paths just unlocked, and the current key was only
+					 * collected, not repaired. Re-begin and re-drive it on a
+					 * fresh transaction - continuing on unlocked paths races
+					 * COW and trips the bset.c min_key assertion.
+					 */
+					bch_info(c, "delete_dead_snapshots(v2): btree %u repair flush at %llu:%llu",
+						 btree, iter.pos.inode, iter.pos.offset);
+					bch2_trans_begin(trans);
+					nr = 0;
+					continue;
+				}
+
 				nr++;
 				if (nr < SNAPSHOT_DELETE_COMMIT_BATCH) {
 					bch2_btree_iter_advance_type(&iter, iter_flags);
@@ -1089,8 +1137,15 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 			ret = bch2_trans_commit(trans, res, NULL,
 						BCH_TRANS_COMMIT_no_enospc);
 			if (!ret) {
+				migrated += nr;
 				bch2_disk_reservation_put(c, res);
 				nr = 0;
+				if (time_after(jiffies, next_msg)) {
+					next_msg = jiffies + 10 * HZ;
+					bch_info(c, "delete_dead_snapshots(v2): btree %u migrated %u restarts %u at %llu:%llu",
+						 btree, migrated, restarts,
+						 iter.pos.inode, iter.pos.offset);
+				}
 				if (!k.k)
 					break;
 				bch2_trans_begin(trans);
@@ -1106,12 +1161,31 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 			 * The staged batch was dropped by the restart: rewind to its
 			 * first key and re-drive. Already-committed keys were removed
 			 * at their source, so the re-driven range skips them.
+			 *
+			 * Debug probe: dump the trans state before trans_begin - the
+			 * path/pos crossing (if triggered here) only shows its
+			 * after-begin state at the reinit probe; this is the before.
 			 */
+			CLASS(printbuf, buf)();
+			bch2_trans_paths_to_text(&buf, trans);
+			bch2_trans_updates_to_text(&buf, trans);
+			bch_info(c, "delete_dead_snapshots(v2): btree %u restart %u (%s) at %llu:%llu trans state:",
+				 btree, restarts + 1, bch2_err_str(ret),
+				 batch_start.inode, batch_start.offset);
+			/* one printk per line: records are truncated at 1KB */
+			for (char *p = buf.buf; p && *p; ) {
+				char *nl = strchrnul(p, '\n');
+				bch_info(c, "%.*s", (int)(nl - p), p);
+				p = *nl ? nl + 1 : NULL;
+			}
+
 			trans->begin_may_drop_updates = true;
 			bch2_trans_begin(trans);
 			trans->begin_may_drop_updates = false;
 			bch2_btree_iter_set_pos(&iter, batch_start);
 			nr = 0;
+			restarts++;
+			cond_resched();
 			continue;
 		}
 
@@ -1542,7 +1616,8 @@ static int delete_dead_snapshots_locked(struct bch_fs *c)
 	try(bch2_snapshot_delete_data_to_text(&node_data, c, d));
 	bch_info(c, "%s", node_data.buf);
 
-	try(!bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)
+	try(READ_ONCE(bch_snapshot_delete_v2) &&
+	    !bch2_request_incompat_feature(c, bcachefs_metadata_version_snapshot_deletion_v2)
 	    ? delete_dead_snapshot_keys_v2(trans)
 	    : delete_dead_snapshot_keys_v1(trans));
 
