@@ -896,6 +896,14 @@ bool __bch2_btree_node_relock(struct btree_trans *trans,
 	if (race_fault())
 		goto fail;
 
+	/*
+	 * The cached pointer may dangle if the node was freed and its struct
+	 * btree recycled for a node of a different btree; the seq match below
+	 * is not proof of identity. Fail the relock and retraverse from root.
+	 */
+	if (unlikely(b->c.btree_id != path->btree_id))
+		goto fail;
+
 	if (six_relock_type(&b->c.lock, want, path->l[level].lock_seq) ||
 	    (btree_node_lock_seq_matches(path, b, level) &&
 	     btree_node_lock_increment(trans, &b->c, level, want))) {
