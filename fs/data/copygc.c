@@ -688,6 +688,8 @@ static int bch2_copygc_thread(void *arg)
 	CLASS(darray_copygc_dev, devs)();
 	u64 last, wait;
 	u32 kick = c->copygc.kick_count;
+	unsigned noop_backoff = 0;
+	u64 moved_last = 0;
 
 	buckets.table = kzalloc(sizeof(*buckets.table), GFP_KERNEL);
 	int ret = !buckets.table
@@ -766,6 +768,43 @@ static int bch2_copygc_thread(void *arg)
 		c->copygc.run_count++;
 
 		wake_up(&c->copygc.running_wq);
+
+		if (READ_ONCE(c->snapshots.delete.running)) {
+			/*
+			 * Storm mode: sectors_seen counts every backpointer
+			 * resolved, whether or not the pred decided to move
+			 * anything - during a deletion storm that's nearly all of
+			 * them, so the seen-based did_work below never sleeps
+			 * while copygc moves nothing and fights the delete pass
+			 * for btree node locks. Credit only sectors moved: drain
+			 * in-flight moves before declaring a run unproductive,
+			 * then back off on wall clock, doubling per consecutive
+			 * unproductive run (1s up to 30s). A productive run goes
+			 * again immediately, and normal pacing resumes once the
+			 * pass is over.
+			 */
+			u64 moved_prev = moved_last;
+			u64 moved_now = atomic64_read(&ctxt.stats->sectors_moved);
+
+			if (moved_now == moved_prev) {
+				move_buckets_wait(&ctxt, &buckets, true);
+				moved_now = atomic64_read(&ctxt.stats->sectors_moved);
+			}
+			moved_last = moved_now;
+
+			if (moved_now == moved_prev) {
+				noop_backoff = clamp(noop_backoff * 2, 1U, 30U);
+
+				set_current_state(TASK_INTERRUPTIBLE);
+				if (kick == READ_ONCE(c->copygc.kick_count))
+					schedule_timeout(noop_backoff * HZ);
+				__set_current_state(TASK_RUNNING);
+			}
+			continue;
+		}
+
+		noop_backoff = 0;
+		moved_last = atomic64_read(&ctxt.stats->sectors_moved);
 
 		if (!wait && !did_work) {
 			u64 min_member_capacity = bch2_min_rw_member_capacity(c);
