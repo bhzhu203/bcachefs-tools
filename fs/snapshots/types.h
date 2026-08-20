@@ -74,6 +74,12 @@ struct snapshot_delete {
 	struct progress_indicator	progress;
 	/* paces per-key migration when the deletion backlog is small: */
 	struct bch_ratelimit		key_rate;
+	/*
+	 * Commit-batch staging watermark for key migration, learned: halves on
+	 * trans memory exhaustion and persists across ranges. 0 = use default;
+	 * stored clamped >= 1 so 0 stays reserved for "unset".
+	 */
+	unsigned			key_mem_watermark;
 };
 
 /*
