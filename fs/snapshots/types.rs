@@ -92,6 +92,12 @@ pub struct snapshot_delete {
     pub progress: c::progress_indicator,
     /* paces per-key migration when the deletion backlog is small: */
     pub key_rate: c::bch_ratelimit,
+    /*
+     * Commit-batch staging watermark for key migration, learned: halves on
+     * trans memory exhaustion and persists across ranges. 0 = use default;
+     * stored clamped >= 1 so 0 stays reserved for "unset".
+     */
+    pub key_mem_watermark: c_uint,
 }
 c_default!(snapshot_delete);
 
