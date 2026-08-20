@@ -73,6 +73,59 @@ MODULE_PARM_DESC(snapshot_delete_v2,
 		 "Use the v2 snapshot deletion scan (default on; 0 forces the v1 path)");
 
 /*
+ * Staging watermark for snapshot deletion commit batches, as a divisor of the
+ * transaction bump allocator (BTREE_TRANS_MEM_MAX): larger divisor = smaller,
+ * safer batches. A per-fs learned value (struct snapshot_delete) overrides it
+ * once a commit has overflowed the allocator.
+ */
+static unsigned bch_snapshot_delete_mem_div = 16;
+
+static int bch_snapshot_delete_mem_div_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned new;
+	int ret = kstrtouint(val, 10, &new);
+
+	if (ret)
+		return ret;
+
+	if (!is_power_of_2(new) || new < 4 || new > 32)
+		return -EINVAL;
+
+	if (new != READ_ONCE(bch_snapshot_delete_mem_div)) {
+		pr_info("bcachefs: snapshot deletion commit batch watermark set to /%u (%u bytes)\n",
+			new, BTREE_TRANS_MEM_MAX / new);
+		WRITE_ONCE(bch_snapshot_delete_mem_div, new);
+	}
+	return 0;
+}
+
+static int bch_snapshot_delete_mem_div_get(char *buffer, const struct kernel_param *kp)
+{
+	unsigned cur = READ_ONCE(bch_snapshot_delete_mem_div);
+	int n = 0;
+
+	for (unsigned i = 4; i <= 32; i <<= 1) {
+		if (i > 4)
+			buffer[n++] = ' ';
+		n += scnprintf(buffer + n, PAGE_SIZE - n,
+			       i == cur ? "[%u]" : "%u", i);
+	}
+	buffer[n++] = '\n';
+	buffer[n] = '\0';
+	return n;
+}
+
+static const struct kernel_param_ops bch_snapshot_delete_mem_div_ops = {
+	.set	= bch_snapshot_delete_mem_div_set,
+	.get	= bch_snapshot_delete_mem_div_get,
+};
+
+module_param_cb(snapshot_delete_mem_div, &bch_snapshot_delete_mem_div_ops,
+		&bch_snapshot_delete_mem_div, 0644);
+MODULE_PARM_DESC(snapshot_delete_mem_div,
+		 "Snapshot deletion commit batch staging watermark, as a divisor of the 64K transaction bump allocator: 4 8 16 32 (default 16)");
+
+/*
  * Snapshot trees:
  *
  * A node in a snapshot tree references keys with that snapshot ID, and all keys
@@ -1029,8 +1082,8 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 /*
  * Commit batching for migrating/dropping a dying snapshot's keys: the memory
  * watermark is the real throttle - like bch2_trans_commit_lazy_if_full(), but
- * committing once an eighth of the transaction bump allocator is used, so the
- * batch adapts to key size. The watermark
+ * the divisor is the snapshot_delete_mem_div module parameter (default /16),
+ * so the batch adapts to key size. The watermark
  * itself backs off (halving) whenever the commit path overflows the
  * allocator, since commit-phase memory - disk accounting arrays grow by
  * powers of two - scales with the batch. The count is only an insurance cap,
@@ -1119,13 +1172,14 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 	 * Staging watermark, adaptive: the commit path's own memory (disk
 	 * accounting arrays grow by powers of two, plus per-update trigger
 	 * allocations) scales with the batch, so a batch that fit the staging
-	 * watermark can still exhaust the bump allocator. The default leaves
-	 * ~2x headroom for that (worst observed: 16K staged needed ~48K more
-	 * at commit); halve on exhaustion and remember the watermark in @d so
-	 * later ranges start at the learned value instead of re-failing each
-	 * time.
+	 * watermark can still exhaust the bump allocator. The default divisor
+	 * (snapshot_delete_mem_div, /16) leaves ~4x headroom for that (worst
+	 * observed: 16K staged needed ~48K more at commit); halve on exhaustion
+	 * and remember the watermark in @d so later ranges start at the
+	 * learned value instead of re-failing each time.
 	 */
-	unsigned mem_watermark = d->key_mem_watermark ?: BTREE_TRANS_MEM_MAX / 8;
+	unsigned mem_watermark = d->key_mem_watermark ?:
+		BTREE_TRANS_MEM_MAX / READ_ONCE(bch_snapshot_delete_mem_div);
 	int ret = 0;
 
 	bch2_trans_begin(trans);
