@@ -411,7 +411,7 @@ static inline int bch2_key_has_snapshot_overwrites(struct btree_trans *trans,
 }
 
 int bch2_delete_dead_snapshot_key(struct btree_trans *, struct btree_iter *,
-				  struct bkey_s_c, u32);
+				  struct btree_iter *, struct bkey_s_c, u32);
 
 int __bch2_delete_dead_snapshots(struct bch_fs *);
 int bch2_delete_dead_snapshots(struct bch_fs *);
