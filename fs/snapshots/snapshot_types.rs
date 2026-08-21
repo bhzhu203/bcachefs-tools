@@ -41,6 +41,7 @@ c_extern! {
                                            total_sectors: *mut u64, btrees_with_keys: *mut u64,
                                            breakdown: *mut c::printbuf) -> c_int;
     pub fn bch2_delete_dead_snapshot_key(trans: *mut c::btree_trans, iter: *mut c::btree_iter,
+                                         dst_iter: *mut c::btree_iter,
                                          k: c::bkey_s_c, live_child: u32) -> c_int;
     pub fn bch2_snapshot_table_rebuild(trans: *mut c::btree_trans) -> c_int;
 }

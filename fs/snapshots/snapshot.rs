@@ -345,7 +345,7 @@ pub fn delete_dead_key<'a, 't>(
     k:          BkeySC<'_>,
     live_child: u32,
 ) -> Result<(), BchError> {
-    let ret = unsafe { c::bch2_delete_dead_snapshot_key(t.raw(), iter, k.to_raw(), live_child) };
+    let ret = unsafe { c::bch2_delete_dead_snapshot_key(t.raw(), iter, core::ptr::null_mut(), k.to_raw(), live_child) };
     t.result(ret)
 }
 
