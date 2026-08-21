@@ -980,16 +980,54 @@ static const struct snapshot_interior_delete *snapshot_id_dying(struct snapshot_
 }
 
 /*
+ * Migrate a dying key to the dst position using an already-positioned
+ * dst_iter.  Shared by the two entry points below.
+ */
+static int delete_dead_snapshot_key_migrate(struct btree_trans *trans,
+					    struct btree_iter *iter,
+					    struct btree_iter *dst_iter,
+					    struct bkey_s_c k, struct bpos dst)
+{
+	struct bkey_s_c dst_k = bkey_try(bch2_btree_iter_peek_slot(dst_iter));
+
+	if (bkey_deleted(dst_k.k)) {
+		struct bkey_i *new = errptr_try(bch2_bkey_make_mut_noupdate(trans, k));
+
+		new->k.p = dst;
+		try(bch2_trans_update(trans, dst_iter, new,
+				      BTREE_UPDATE_internal_snapshot_node));
+	} else if (iter->btree_id == BTREE_ID_damage &&
+		   k.k->type == KEY_TYPE_damage &&
+		   dst_k.k->type == KEY_TYPE_damage) {
+		/*
+		 * Damage entries merge instead of dropping: the dying
+		 * key can hold counts recorded after the descendant's
+		 * key was created, so "descendant overwrote it" never
+		 * applies:
+		 */
+		struct bkey_i *new = errptr_try(bch2_damage_keys_merge(trans, dst, dst_k, k));
+		try(bch2_trans_update(trans, dst_iter, new,
+				      BTREE_UPDATE_internal_snapshot_node));
+	}
+	return 0;
+}
+
+/*
  * Remove a key from a dying/deleted snapshot node, migrating it to that node's
  * live descendant first when there is one (live_child != 0): the key is still
  * visible to the descendant via inheritance, so dropping it outright would lose
  * data. Only copy it down if the descendant doesn't already have its own key at
  * that position. With no live descendant (a leaf) the key is just deleted.
  *
+ * @dst_iter: optional reusable iterator for the migration target.  When
+ * provided the caller keeps it alive across calls; it is repositioned here.
+ * When NULL a local iterator is created (fsck / one-shot callers).
+ *
  * Shared by the deletion pass (delete_dead_snapshots_process_key) and the fsck
  * repair (bch2_check_key_has_snapshot).
  */
 int bch2_delete_dead_snapshot_key(struct btree_trans *trans, struct btree_iter *iter,
+				  struct btree_iter *dst_iter,
 				  struct bkey_s_c k, u32 live_child)
 {
 	struct bch_fs *c = trans->c;
@@ -1000,28 +1038,13 @@ int bch2_delete_dead_snapshot_key(struct btree_trans *trans, struct btree_iter *
 		struct bpos dst = k.k->p;
 		dst.snapshot = live_child;
 
-		CLASS(btree_iter, dst_iter)(trans, iter->btree_id, dst,
-					    BTREE_ITER_all_snapshots|BTREE_ITER_intent);
-		struct bkey_s_c dst_k = bkey_try(bch2_btree_iter_peek_slot(&dst_iter));
-
-		if (bkey_deleted(dst_k.k)) {
-			struct bkey_i *new = errptr_try(bch2_bkey_make_mut_noupdate(trans, k));
-
-			new->k.p = dst;
-			try(bch2_trans_update(trans, &dst_iter, new,
-					      BTREE_UPDATE_internal_snapshot_node));
-		} else if (iter->btree_id == BTREE_ID_damage &&
-			   k.k->type == KEY_TYPE_damage &&
-			   dst_k.k->type == KEY_TYPE_damage) {
-			/*
-			 * Damage entries merge instead of dropping: the dying
-			 * key can hold counts recorded after the descendant's
-			 * key was created, so "descendant overwrote it" never
-			 * applies:
-			 */
-			struct bkey_i *new = errptr_try(bch2_damage_keys_merge(trans, dst, dst_k, k));
-			try(bch2_trans_update(trans, &dst_iter, new,
-					      BTREE_UPDATE_internal_snapshot_node));
+		if (dst_iter) {
+			bch2_btree_iter_set_pos(dst_iter, dst);
+			try(delete_dead_snapshot_key_migrate(trans, iter, dst_iter, k, dst));
+		} else {
+			CLASS(btree_iter, local_dst)(trans, iter->btree_id, dst,
+						     BTREE_ITER_all_snapshots|BTREE_ITER_intent);
+			try(delete_dead_snapshot_key_migrate(trans, iter, &local_dst, k, dst));
 		}
 	}
 
@@ -1075,6 +1098,7 @@ static void snapshot_delete_ratelimit(struct bch_fs *c)
 
 static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 					     struct btree_iter *iter,
+					     struct btree_iter *dst_iter,
 					     struct bkey_s_c k)
 {
 	struct bch_fs *c = trans->c;
@@ -1097,7 +1121,7 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 	 */
 	snapshot_delete_ratelimit(c);
 
-	return bch2_delete_dead_snapshot_key(trans, iter, k, dying->live_child);
+	return bch2_delete_dead_snapshot_key(trans, iter, dst_iter, k, dying->live_child);
 }
 
 static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum btree_id btree)
@@ -1114,7 +1138,7 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 		bch2_progress_update_iter(trans, &d->progress, &iter);
 
 		bch2_disk_reservation_put(c, &res.r);
-		delete_dead_snapshots_process_key(trans, &iter, k);
+		delete_dead_snapshots_process_key(trans, &iter, NULL, k);
 	})));
 
 	return 0;
@@ -1152,6 +1176,15 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 
 	CLASS(btree_iter, iter)(trans, btree, start, iter_flags);
 
+	/*
+	 * Reusable iterator for migration-target (dst) lookups.  Consecutive
+	 * dying keys usually map to nearby dst positions, so repositioning
+	 * this iterator is cheaper than allocating + root-traversing a fresh
+	 * one per key.  bch2_delete_dead_snapshot_key() repositions it.
+	 */
+	CLASS(btree_iter, dst_iter)(trans, btree, POS_MIN,
+				    BTREE_ITER_all_snapshots|BTREE_ITER_intent);
+
 	struct bpos batch_start = start;
 	unsigned nr = 0;
 	/*
@@ -1182,7 +1215,7 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 			if (!nr)
 				batch_start = k.k->p;
 
-			ret = delete_dead_snapshots_process_key(trans, &iter, k);
+			ret = delete_dead_snapshots_process_key(trans, &iter, &dst_iter, k);
 
 			if (!ret) {
 				nr++;
