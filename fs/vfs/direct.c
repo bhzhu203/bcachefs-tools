@@ -460,7 +460,6 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 		dio->op.write_point	= writepoint_hashed((unsigned long) current);
 		dio->op.nr_replicas	= dio->op.opts.data_replicas;
 		dio->op.subvol		= inode_inum(inode).subvol;
-		dio->op.snapshot	= inode->ei_inode.bi_snapshot;
 		dio->op.pos		= POS(inode_inum(inode).inum, (u64) req->ki_pos >> 9);
 		dio->op.devs_need_flush	= &inode->ei_devs_need_flush;
 
