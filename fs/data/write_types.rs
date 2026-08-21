@@ -4,7 +4,7 @@
 
 use crate::cstructs::c;
 use crate::types::{NeBytes, c_default};
-use core::ffi::c_uint;
+use core::ffi::{c_int, c_uint};
 use cstruct_macros::{CStruct, bitfield, c_enum, c_xmacro, TypeInfo};
 use nestify::nest;
 
@@ -26,6 +26,7 @@ c_xmacro! {
         (in_worker),
         (submitted),
         (convert_unwritten),
+        (defer_reservation),
     }
 }
 
@@ -93,6 +94,8 @@ nest! {
         pub cl: c::closure,
         pub c: *mut c::bch_fs,
         pub end_io: Option<unsafe extern "C" fn(*mut c::bch_write_op)>,
+        pub nocow_fast_check: Option<unsafe extern "C" fn(*mut c::bch_write_op) -> bool>,
+        pub reserve_cow: Option<unsafe extern "C" fn(*mut c::bch_write_op) -> c_int>,
         pub start_time: u64,
 
         /* C's CONFIG_BCACHEFS_ASYNC_OBJECT_LISTS, which bcachefs.h defines from these */
@@ -146,6 +149,7 @@ nest! {
         pub opts: c::bch_inode_opts,
 
         pub subvol: u32,
+        pub snapshot: u32,
         pub pos: c::bpos,
         pub version: c::bversion,
 
