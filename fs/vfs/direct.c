@@ -287,6 +287,8 @@ static noinline bool bch2_dio_write_check_allocated(struct dio_write *dio)
 }
 
 static void bch2_dio_write_loop_async(struct bch_write_op *);
+static bool bch2_dio_nocow_fast_check(struct bch_write_op *);
+static int bch2_dio_reserve_cow(struct bch_write_op *);
 static __always_inline long bch2_dio_write_done(struct dio_write *dio);
 
 /*
@@ -369,11 +371,11 @@ static __always_inline void bch2_dio_write_end(struct dio_write *dio)
 			i_size_write(&inode->v, req->ki_pos);
 	}
 
-	if (dio->op.i_sectors_delta || dio->quota_res.sectors) {
+	if (dio->op.i_sectors_delta) {
 		guard(mutex)(&inode->ei_quota_lock);
 		__bch2_i_sectors_acct(c, inode, &dio->quota_res, dio->op.i_sectors_delta);
-		__bch2_quota_reservation_put(c, inode, &dio->quota_res);
 	}
+	__bch2_quota_reservation_put(c, inode, &dio->quota_res);
 
 	bio_release_pages(bio, false);
 
@@ -453,10 +455,12 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 		dio->op.end_io		= sync
 			? bch2_dio_write_sync_done
 			: bch2_dio_write_loop_async;
+		dio->op.nocow_fast_check = bch2_dio_nocow_fast_check;
 		dio->op.target		= dio->op.opts.foreground_target;
 		dio->op.write_point	= writepoint_hashed((unsigned long) current);
 		dio->op.nr_replicas	= dio->op.opts.data_replicas;
 		dio->op.subvol		= inode_inum(inode).subvol;
+		dio->op.snapshot	= inode->ei_inode.bi_snapshot;
 		dio->op.pos		= POS(inode_inum(inode).inum, (u64) req->ki_pos >> 9);
 		dio->op.devs_need_flush	= &inode->ei_devs_need_flush;
 
@@ -464,18 +468,24 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 			dio->op.flags |= BCH_WRITE_sync;
 		if (dio->flush)
 			dio->op.flags |= BCH_WRITE_flush;
-		dio->op.flags |= BCH_WRITE_check_enospc;
 
-		ret = bch2_quota_reservation_add(c, inode, &dio->quota_res,
-						 bio_sectors(bio), true);
-		if (unlikely(ret))
-			goto err;
+		if (unlikely(opts.nocow && c->opts.nocow_enabled)) {
+			dio->op.flags |= BCH_WRITE_defer_reservation;
+			dio->op.reserve_cow = bch2_dio_reserve_cow;
+		} else {
+			dio->op.flags |= BCH_WRITE_check_enospc;
 
-		ret = bch2_disk_reservation_get(c, &dio->op.res, bio_sectors(bio),
-						dio->op.opts.data_replicas, 0);
-		if (unlikely(ret) &&
-		    !bch2_dio_write_check_allocated(dio))
-			goto err;
+			ret = bch2_quota_reservation_add(c, inode, &dio->quota_res,
+							 bio_sectors(bio), true);
+			if (unlikely(ret))
+				goto err;
+
+			ret = bch2_disk_reservation_get(c, &dio->op.res, bio_sectors(bio),
+							dio->op.opts.data_replicas, 0);
+			if (unlikely(ret) &&
+			    !bch2_dio_write_check_allocated(dio))
+				goto err;
+		}
 
 		task_io_account_write(bio->bi_iter.bi_size);
 
@@ -486,6 +496,10 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 			dio->sync = sync = true;
 
 		dio->loop = true;
+		if (unlikely(opts.nocow && c->opts.nocow_enabled)) {
+			dio->op.flags |= BCH_WRITE_defer_reservation;
+			dio->op.flags &= ~BCH_WRITE_check_enospc;
+		}
 		closure_call(&dio->op.cl, bch2_write, NULL, NULL);
 
 		if (!sync)
@@ -523,6 +537,22 @@ static noinline __cold void bch2_dio_write_continue(struct dio_write *dio)
 	bch2_dio_write_loop(dio);
 	if (mm)
 		kthread_unuse_mm(mm);
+}
+
+static bool bch2_dio_nocow_fast_check(struct bch_write_op *op)
+{
+	struct dio_write *dio = container_of(op, struct dio_write, op);
+
+	return !dio->flush && !dio->iter.count;
+}
+
+static int bch2_dio_reserve_cow(struct bch_write_op *op)
+{
+	struct dio_write *dio = container_of(op, struct dio_write, op);
+	struct bch_fs *c = op->c;
+
+	return bch2_quota_reservation_add(c, dio->inode, &dio->quota_res,
+					  bio_sectors(&op->wbio.bio), true);
 }
 
 static void bch2_dio_write_loop_async(struct bch_write_op *op)
