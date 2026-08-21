@@ -1048,26 +1048,6 @@ int bch2_delete_dead_snapshot_key(struct btree_trans *trans, struct btree_iter *
 	return bch2_btree_delete_at(trans, iter, BTREE_UPDATE_internal_snapshot_node);
 }
 
-static int delete_dead_snapshots_process_key(struct btree_trans *trans,
-					     struct btree_iter *iter,
-					     struct bkey_s_c k)
-{
-	struct bch_fs *c = trans->c;
-	struct snapshot_delete *d = &c->snapshots.delete;
-
-	int ret = bch2_check_key_has_snapshot(trans, iter, k);
-	if (ret < 0)
-		return ret;
-	if (ret)
-		return bch2_trans_commit_lazy(trans, NULL, NULL, BCH_TRANS_COMMIT_no_enospc);
-
-	const struct snapshot_interior_delete *dying = snapshot_id_dying(d, k.k->p.snapshot);
-	if (!dying)
-		return 0;
-
-	return bch2_delete_dead_snapshot_key(trans, iter, k, dying->live_child);
-}
-
 /*
  * Pacing for small deletions: when the backlog of dying snapshot nodes is
  * small (steady state - snapshots deleted at roughly the rate they're
@@ -1113,6 +1093,33 @@ static void snapshot_delete_ratelimit(struct bch_fs *c)
 	}
 }
 
+static int delete_dead_snapshots_process_key(struct btree_trans *trans,
+					     struct btree_iter *iter,
+					     struct bkey_s_c k)
+{
+	struct bch_fs *c = trans->c;
+	struct snapshot_delete *d = &c->snapshots.delete;
+
+	int ret = bch2_check_key_has_snapshot(trans, iter, k);
+	if (ret < 0)
+		return ret;
+	if (ret)
+		return bch2_trans_commit_lazy(trans, NULL, NULL, BCH_TRANS_COMMIT_no_enospc);
+
+	const struct snapshot_interior_delete *dying = snapshot_id_dying(d, k.k->p.snapshot);
+	if (!dying)
+		return 0;
+
+	/*
+	 * Pace the migration itself, not the scan that finds it: the scan
+	 * generates no commits, and throttling it leaves the worker pinned at
+	 * the rate limit for entire rounds in which almost nothing is dying.
+	 */
+	snapshot_delete_ratelimit(c);
+
+	return bch2_delete_dead_snapshot_key(trans, iter, k, dying->live_child);
+}
+
 static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum btree_id btree)
 {
 	struct bch_fs *c = trans->c;
@@ -1125,7 +1132,6 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
 			&res.r, NULL, BCH_TRANS_COMMIT_no_enospc, ({
 		bch2_progress_update_iter(trans, &d->progress, &iter);
-		snapshot_delete_ratelimit(c);
 
 		bch2_disk_reservation_put(c, &res.r);
 		delete_dead_snapshots_process_key(trans, &iter, k);
@@ -1196,7 +1202,6 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 			if (!nr)
 				batch_start = k.k->p;
 
-			snapshot_delete_ratelimit(c);
 			ret = delete_dead_snapshots_process_key(trans, &iter, k);
 
 			if (!ret) {
