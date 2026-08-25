@@ -258,10 +258,10 @@ void *bch2_btree_bounce_alloc_noprof(struct bch_fs *c, size_t size, bool *used_m
 	 * with GFP_NOWAIT the vmalloc fallback doesn't happen either way -
 	 * failure falls through to the mempool below.
 	 */
-	void *p = kvmalloc_noprof(size, GFP_NOWAIT|__GFP_ACCOUNT|__GFP_RECLAIMABLE);
+	void *p = kvmalloc_noprof(size, GFP_NOWAIT|__GFP_ACCOUNT);
 #else
 	void *p = kvmalloc_node_align_noprof(size, 1,
-					     GFP_NOWAIT|__GFP_ACCOUNT|__GFP_RECLAIMABLE,
+					     GFP_NOWAIT|__GFP_ACCOUNT,
 					     NUMA_NO_NODE);
 #endif
 	if (!p) {

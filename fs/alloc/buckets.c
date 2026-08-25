@@ -1034,7 +1034,7 @@ int bch2_buckets_nouse_alloc(struct bch_fs *c)
 
 		ca->buckets_nouse = bch2_kvmalloc(BITS_TO_LONGS(ca->mi.nbuckets) *
 					    sizeof(unsigned long),
-					    GFP_KERNEL|__GFP_ZERO|__GFP_RECLAIMABLE);
+					    GFP_KERNEL|__GFP_ZERO);
 		if (!ca->buckets_nouse)
 			return bch_err_throw(c, ENOMEM_buckets_nouse);
 	}
@@ -1063,7 +1063,7 @@ int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 		return bch_err_throw(c, no_resize_with_buckets_nouse);
 
 	bucket_gens = bch2_kvmalloc(struct_size(bucket_gens, b, nbuckets),
-				    GFP_KERNEL|__GFP_ZERO|__GFP_RECLAIMABLE);
+				    GFP_KERNEL|__GFP_ZERO);
 	if (!bucket_gens)
 		return bch_err_throw(c, ENOMEM_bucket_gens);
 

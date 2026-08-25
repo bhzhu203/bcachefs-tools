@@ -1128,7 +1128,8 @@ static int delete_dead_snapshots_process_key(struct btree_trans *trans,
 	if (ret < 0)
 		return ret;
 	if (ret)
-		return bch2_trans_commit_lazy(trans, NULL, NULL, BCH_TRANS_COMMIT_no_enospc);
+		return bch2_trans_commit_lazy(trans, NULL, NULL,
+				BCH_WATERMARK_btree|BCH_TRANS_COMMIT_no_enospc);
 
 	const struct snapshot_interior_delete *dying = snapshot_id_dying(d, k.k->p.snapshot);
 	if (!dying)
@@ -1154,7 +1155,8 @@ static int delete_dead_snapshot_keys_v1_btree(struct btree_trans *trans, enum bt
 	try(for_each_btree_key_commit(trans, iter,
 			btree, POS_MIN,
 			BTREE_ITER_prefetch|BTREE_ITER_all_snapshots, k,
-			&res.r, NULL, BCH_TRANS_COMMIT_no_enospc, ({
+			&res.r, NULL,
+			BCH_WATERMARK_btree|BCH_TRANS_COMMIT_no_enospc, ({
 		bch2_progress_update_iter(trans, &d->progress, &iter);
 
 		bch2_disk_reservation_put(c, &res.r);
@@ -1249,8 +1251,14 @@ static int delete_dead_snapshot_keys_batched(struct btree_trans *trans,
 
 		/* Batch full, memory watermark hit, or end of range: commit. */
 		if (ret == 0 && nr) {
+			/*
+			 * Above-normal watermark: the dirty-ratio commit throttle
+			 * would otherwise starve the deletion behind its own
+			 * dirty btree nodes - it is the one workload that must
+			 * dirty the cache faster than it drains.
+			 */
 			ret = bch2_trans_commit(trans, res, NULL,
-						BCH_TRANS_COMMIT_no_enospc);
+						BCH_WATERMARK_btree|BCH_TRANS_COMMIT_no_enospc);
 			if (!ret) {
 				bch2_disk_reservation_put(c, res);
 				nr = 0;

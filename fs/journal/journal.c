@@ -17,6 +17,7 @@
 #include "journal/journal.h"
 #include "journal/reclaim.h"
 #include "journal/seq_blacklist.h"
+#include "journal/stall_watchdog.h"
 #include "journal/write.h"
 
 #include "sb/counters.h"
@@ -779,7 +780,7 @@ static void journal_buf_prealloc(struct journal *j)
 	unsigned buf_size = j->buf_size_want;
 
 	spin_unlock(&j->lock);
-	void *buf = kvmalloc(buf_size, GFP_NOIO|__GFP_RECLAIMABLE);
+	void *buf = kvmalloc(buf_size, GFP_NOIO);
 	spin_lock(&j->lock);
 
 	if (!buf)
@@ -972,6 +973,7 @@ int bch2_journal_res_get_slowpath(struct journal *j, struct journal_res *res,
 		   total_wait / HZ, bch2_err_str(ret));
 	bch2_journal_debug_to_text(&buf, j);
 	bch2_print_str(c, KERN_ERR, buf.buf);
+	bch2_stall_dump_stacks(c);
 
 	/*
 	 * On HDD, journal can deadlock when a transaction holds btree locks

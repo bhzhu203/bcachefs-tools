@@ -714,6 +714,7 @@ struct bch_fs {
 
 	struct stdio_redirect	*stdio;
 	struct task_struct	*stdio_filter;
+	struct task_struct	*stall_watchdog;
 	unsigned		loglevel;
 	unsigned		prev_loglevel;
 	/*

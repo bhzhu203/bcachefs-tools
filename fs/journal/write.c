@@ -201,7 +201,7 @@ static void journal_buf_realloc(struct journal *j, struct journal_buf *buf)
 	 * as its first act, so sitting in reclaim for a bigger buffer stalls
 	 * journal write completions. Take the failure immediately instead.
 	 */
-	new_buf = kvmalloc(new_size, GFP_NOIO|__GFP_NORETRY|__GFP_NOWARN|__GFP_RECLAIMABLE);
+	new_buf = kvmalloc(new_size, GFP_NOIO|__GFP_NORETRY|__GFP_NOWARN);
 	if (!new_buf)
 		return;
 

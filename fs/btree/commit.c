@@ -1393,10 +1393,25 @@ static noinline int bch2_trans_commit_btree_write_ratelimit(struct btree_trans *
 	struct bch_fs_btree_cache *bc = &c->btree.cache;
 
 	return drop_locks_do(trans, ({
+		int ret = 0;
+		bool released = trans->throttled;
+
+		/*
+		 * This wait can block indefinitely, and the condition only
+		 * clears when other transactions run — btree_node_write_work
+		 * completions are WQ workers drawing from the same admission
+		 * pool. Holding an admission slot across the wait wedges the
+		 * fs: dirty nodes can never be written out, so the throttle
+		 * never lifts. Drop the slot for the duration of the wait.
+		 */
+		if (released)
+			bch2_trans_admission_release(trans);
 		trans_wait_event(trans, &bc->nr_in_flight_wait,
 			atomic_long_read(&bc->nr_in_flight_inner) < BTREE_WRITE_IO_LIMIT(trans->c) * 3 / 4 &&
 			!bch2_btree_cache_should_throttle(c));
-		0;
+		if (released)
+			ret = bch2_trans_admission_reacquire(trans);
+		ret;
 	}));
 }
 

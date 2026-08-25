@@ -1028,6 +1028,12 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 		 * for multiple consecutive rounds, the cascade is self-sustaining and
 		 * reclaim is feeding it faster than it converges. Break out and let
 		 * in-flight update_key work complete before the next reclaim cycle.
+		 *
+		 * But when the cache is dirty enough to throttle committers
+		 * (dirty > 3/4 live, the should_throttle condition), reclaim is the
+		 * only drainer: backing off here starves every transaction parked on
+		 * the throttle. Keep flushing - the in-flight write limit is the
+		 * real IO brake.
 		 */
 		if (!direct && nr_flushed) {
 			size_t dirty_after = bc->live[0].nr_dirty + bc->live[1].nr_dirty;
@@ -1036,7 +1042,8 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 			else
 				cascade_stall_count = 0;
 
-			if (cascade_stall_count >= 3)
+			if (cascade_stall_count >= 3 &&
+			    dirty_after * 4 <= btree_cache_live * 3)
 				break;
 		}
 	} while ((min_nr || min_key_cache) && nr_flushed && !direct);

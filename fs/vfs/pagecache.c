@@ -33,7 +33,7 @@ int bch2_filemap_get_contig_folios_d(struct address_space *mapping,
 		if ((u64) pos >= (u64) start + (1ULL << 20))
 			fgp_flags &= ~FGP_CREAT;
 
-		ret = darray_make_room_gfp(fs, 1, (gfp & GFP_KERNEL)|__GFP_RECLAIMABLE);
+		ret = darray_make_room_gfp(fs, 1, (gfp & GFP_KERNEL));
 		if (ret)
 			break;
 

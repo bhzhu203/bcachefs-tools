@@ -519,7 +519,7 @@ int bch2_replicas_gc_accounted(struct bch_fs *c)
 	scoped_guard(percpu_write_noio, &c->capacity.mark_lock) {
 		struct bch_replicas_cpu new = {
 			.entry_size	= c->replicas.entry_size,
-			.entries	= kvcalloc(c->replicas.nr, c->replicas.entry_size, GFP_KERNEL|__GFP_RECLAIMABLE),
+			.entries	= kvcalloc(c->replicas.nr, c->replicas.entry_size, GFP_KERNEL),
 		};
 		if (!new.entries) {
 			bch_err(c, "error allocating c->replicas_gc");
@@ -590,7 +590,7 @@ __bch2_sb_replicas_to_cpu_replicas(struct bch_fs *c,
 	entry_size = __cpu_replicas_entry_bytes(entry_size);
 	entry_size = round_up(entry_size, sizeof(atomic_t));
 
-	cpu_r->entries = kvcalloc(nr, entry_size, GFP_KERNEL|__GFP_RECLAIMABLE);
+	cpu_r->entries = kvcalloc(nr, entry_size, GFP_KERNEL);
 	if (!cpu_r->entries)
 		return -BCH_ERR_ENOMEM_cpu_replicas;
 
@@ -633,7 +633,7 @@ __bch2_sb_replicas_v0_to_cpu_replicas(struct bch_fs *c,
 
 	entry_size = round_up(entry_size, sizeof(atomic_t));
 
-	cpu_r->entries = kvcalloc(nr, entry_size, GFP_KERNEL|__GFP_RECLAIMABLE);
+	cpu_r->entries = kvcalloc(nr, entry_size, GFP_KERNEL);
 	if (!cpu_r->entries)
 		return -BCH_ERR_ENOMEM_cpu_replicas;
 

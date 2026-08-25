@@ -1239,7 +1239,7 @@ int bch2_gc_gens(struct bch_fs *c)
 
 		BUG_ON(ca->oldest_gen);
 
-		ca->oldest_gen = kvmalloc(gens->nbuckets, GFP_KERNEL|__GFP_RECLAIMABLE);
+		ca->oldest_gen = kvmalloc(gens->nbuckets, GFP_KERNEL);
 		if (!ca->oldest_gen) {
 			ret = bch_err_throw(c, ENOMEM_gc_gens);
 			goto err;

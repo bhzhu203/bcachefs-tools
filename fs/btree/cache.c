@@ -216,21 +216,25 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 				   gfp_t gfp)
 {
 	/*
-	 * Use __GFP_RECLAIMABLE for btree node data allocations so pages
-	 * land in MIGRATE_RECLAIMABLE pageblocks instead of MIGRATE_UNMOVABLE.
-	 * This allows kcompactd to reclaim btree cache pages via the shrinker
-	 * when contiguous memory is needed.
+	 * Use __GFP_RECLAIMABLE for kmalloc'd btree node data so pages land
+	 * in MIGRATE_RECLAIMABLE pageblocks instead of MIGRATE_UNMOVABLE,
+	 * letting kcompactd reclaim btree cache pages via the shrinker when
+	 * contiguous memory is needed.
 	 *
-	 * Always try kmalloc first with __GFP_NORETRY to avoid compaction
-	 * latency and deadlocks (we hold btree locks). If kmalloc fails,
-	 * fall back to __vmalloc. Note: __vmalloc does NOT support
-	 * __GFP_RECLAIMABLE in kernels < 6.18, so vmalloc pages land in
-	 * MIGRATE_MOVABLE/UNMOVABLE pageblocks and are not reclaimable.
-	 * This is a known limitation; the shrinker must be aggressive
-	 * enough to free kmalloc'd pages before vmalloc is needed.
+	 * vmalloc does not support __GFP_RECLAIMABLE: mm/vmalloc.c strips any
+	 * gfp flags outside GFP_VMALLOC_SUPPORTED and WARNs, and kvmalloc
+	 * falls back to vmalloc. So the vmalloc fallback uses plain gfp;
+	 * vmalloc'd node data is not reclaimable. The shrinker must free
+	 * kmalloc'd pages before vmalloc is needed.
 	 */
 	gfp |= __GFP_ACCOUNT;
 	gfp_t gfp_reclaimable = gfp | __GFP_RECLAIMABLE;
+	/*
+	 * Callers pass __GFP_RECLAIMABLE for the kmalloc attempt above; it
+	 * must not reach the vmalloc paths, which strip it and WARN
+	 * (see vmalloc_fix_flags()).
+	 */
+	gfp &= ~__GFP_RECLAIMABLE;
 
 	if (!b->data) {
 		unsigned bytes = 1U << b->byte_order;
@@ -242,15 +246,8 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 		 * the compound pages are reclaimable by kcompactd.
 		 */
 		b->data = kmalloc(bytes, gfp_reclaimable | __GFP_NORETRY);
-		if (!b->data) {
-			/*
-			 * kmalloc failed (memory fragmentation or pressure).
-			 * Fall back to __vmalloc with __GFP_RECLAIMABLE.
-			 * In kernel 6.17+, __vmalloc supports __GFP_RECLAIMABLE
-			 * and pages land in MIGRATE_RECLAIMABLE pageblocks.
-			 */
-			b->data = __vmalloc(bytes, gfp_reclaimable);
-		}
+		if (!b->data)
+			b->data = __vmalloc(bytes, gfp);
 		if (!b->data)
 			return bch_err_throw(c, ENOMEM_btree_node_mem_alloc);
 	}
@@ -259,7 +256,7 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 		unsigned bytes = __btree_aux_data_bytes(b->byte_order);
 
 #ifdef __KERNEL__
-		b->aux_data = kvmalloc(bytes, gfp_reclaimable);
+		b->aux_data = kvmalloc(bytes, gfp);
 #else
 		b->aux_data = mmap(NULL, bytes,
 				   PROT_READ|PROT_WRITE|PROT_EXEC,
@@ -1851,7 +1848,7 @@ int bch2_fs_btree_evicted_size_init(struct bch_fs *c)
 		bits += (ilog2(max_nodes) - 22) / 4;
 	u64 nr = 1ULL << bits;
 
-	e->entries = kvcalloc(nr, sizeof(u64), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
+	e->entries = kvcalloc(nr, sizeof(u64), GFP_KERNEL|__GFP_NOWARN);
 	if (!e->entries)
 		return bch_err_throw(c, ENOMEM_fs_other_alloc);
 

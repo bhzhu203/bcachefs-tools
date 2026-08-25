@@ -58,6 +58,7 @@
 #include "journal/journal.h"
 #include "journal/reclaim.h"
 #include "journal/seq_blacklist.h"
+#include "journal/stall_watchdog.h"
 
 #include "sb/clean.h"
 #include "sb/counters.h"
@@ -609,6 +610,7 @@ static int __bch2_fs_read_write(struct bch_fs *c, bool early)
 	enumerated_ref_start(&c->writes);
 
 	int ret = bch2_journal_reclaim_start(&c->journal) ?:
+		  bch2_stall_watchdog_start(c) ?:
 		  bch2_btree_write_buffer_start(c) ?:
 		  bch2_copygc_start(c) ?:
 		  (!c->opts.read_only
@@ -663,6 +665,7 @@ static void __bch2_fs_free(struct bch_fs *c)
 	utf8_unload(c->cf_encoding);
 #endif
 
+	bch2_stall_watchdog_stop(c);
 	bch2_reconcile_stop(c);
 	bch2_copygc_stop(c);
 	bch2_btree_write_buffer_stop(c);
@@ -858,6 +861,7 @@ int bch2_fs_init_rw(struct bch_fs *c)
 	try(bch2_fs_journal_init_rw(&c->journal));
 	try(bch2_fs_vfs_init_rw(c));
 	try(bch2_journal_reclaim_start(&c->journal));
+	try(bch2_stall_watchdog_start(c));
 	try(bch2_btree_write_buffer_start(c));
 	try(bch2_copygc_start(c));
 	try(bch2_reconcile_start(c));
@@ -1392,7 +1396,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts *opts,
 				    bch_sb_handles *sbs,
 				    struct printbuf *out)
 {
-	struct bch_fs *c = kvzalloc(sizeof(struct bch_fs), GFP_KERNEL|__GFP_RECLAIMABLE);
+	struct bch_fs *c = kvzalloc(sizeof(struct bch_fs), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-BCH_ERR_ENOMEM_fs_alloc);
 
@@ -1744,6 +1748,8 @@ static void bcachefs_exit(void)
 
 static int __init bcachefs_init(void)
 {
+	pr_info("bcachefs: loading (git: %s)\n", BCACHEFS_GIT_VERSION);
+
 	bch2_bkey_pack_test();
 
 	bch2_dirent_init();

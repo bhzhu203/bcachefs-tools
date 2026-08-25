@@ -1405,7 +1405,7 @@ struct bkey_s_c_backpointer bch2_bp_scan_iter_peek(struct btree_trans *trans,
 			struct bkey_i_backpointer bp;
 			bkey_reassemble(&bp.k_i, k);
 			if (iter->bps.nr > limit ||
-			    darray_push_gfp(&iter->bps, bp, GFP_KERNEL|__GFP_NOWARN|__GFP_RECLAIMABLE))
+			    darray_push_gfp(&iter->bps, bp, GFP_KERNEL|__GFP_NOWARN))
 				break;
 
 			iter->pos = bpos_nosnap_successor(k.k->p);
@@ -1434,7 +1434,7 @@ static int bch2_bucket_bitmap_set(struct bch_dev *ca, struct bucket_bitmap *b, u
 	scoped_guard(mutex, &b->lock) {
 		if (!b->buckets) {
 			b->buckets = kvcalloc(BITS_TO_LONGS(ca->mi.nbuckets),
-					      sizeof(unsigned long), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
+					      sizeof(unsigned long), GFP_KERNEL|__GFP_NOWARN);
 			if (!b->buckets)
 				return bch_err_throw(ca->fs, ENOMEM_backpointer_mismatches_bitmap);
 		}
@@ -1453,7 +1453,7 @@ int bch2_bucket_bitmap_resize(struct bch_dev *ca, struct bucket_bitmap *b,
 			return 0;
 
 		unsigned long *n = kvcalloc(BITS_TO_LONGS(new_size),
-					    sizeof(unsigned long), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
+					    sizeof(unsigned long), GFP_KERNEL|__GFP_NOWARN);
 		if (!n)
 			return bch_err_throw(ca->fs, ENOMEM_backpointer_mismatches_bitmap);
 
