@@ -17,7 +17,7 @@ Fork changes over upstream
 
 This fork carries stability and performance work for HDD (rotational
 media) deployments, layered on top of upstream bcachefs (base commit
-`0aeaf7e1f0d6`, 2026-08-20). The 52 commits below are not in upstream.
+`0aeaf7e1f0d6`, 2026-08-20). The 54 commits below are not in upstream.
 
 ### Snapshot deletion: throughput, pacing, and storm mitigation
 
@@ -80,6 +80,44 @@ Commits: `102879d271660`, `b3ca9a7452e39`, `3bcec538cc3c5`
 (`fb8fe3622ea9a` later dropped the journal-reservation 30s timeout from
 the first commit — upstream's 1s SRCU lock-drop already covers it.)
 
+### Btree-cache throttle deadlock/livelock under snapshot deletion
+
+Two failure shapes observed on HDD while a multi-million-key snapshot
+deletion ran against a live database workload, both diagnosed via a new
+stall watchdog and both fixed in `ad98acf326bc7`:
+
+- **Deadlock (whole system unreachable)**: transactions parked in the
+  btree-write dirty-ratio throttle (upstream's
+  `bch2_trans_commit_btree_write_ratelimit`, which blocks commits when
+  dirty btree nodes exceed 3/4 of the cache) kept holding this fork's
+  transaction admission-control slots. Btree write completions
+  (`btree_node_write_work`) are workqueue workers that take a
+  transaction from the same background slot pool — the only path that
+  turns dirty nodes clean — so with sleepers holding all slots the
+  dirty ratio could never drop and the wait never ended. Fix: release
+  the admission slot across the throttle wait and reacquire after.
+- **Livelock (deletion frozen at 52% across reboots)**: the deletion
+  pass is the one workload that must dirty the cache faster than it
+  drains; the dirty-ratio throttle starved it at the 75% boundary
+  (dirty oscillated 75–81% with zero net drain, journal reclaim flushed
+  166K pins yet in-flight btree writes sat at zero). Fixes: deletion
+  commits at `BCH_WATERMARK_btree` (above-normal, exempt from the
+  dirty-ratio throttle but still bounded by the in-flight write
+  limit), and journal reclaim skips its cascade back-off while dirty >
+  3/4 live — when committers are throttled, reclaim is the only
+  drainer.
+- **Stall watchdog** (`fs/journal/stall_watchdog.c`): a kthread that
+  samples per-bdi `WB_WRITEBACK`/`WB_RECLAIMABLE`/`WB_WRITTEN` every
+  10s and, after 60s of no progress, dumps journal state, btree cache
+  dirty/live/in-flight/throttle counters, and every blocked task's
+  stack. Zero hot-path overhead; this is what captured both failure
+  signatures above on an unreachable-over-SSH machine via netconsole.
+- **`__GFP_RECLAIMABLE` scope fix**: flags reaching vmalloc/kvmalloc
+  paths are stripped first — `vmalloc_fix_flags()` WARNs on
+  unsupported flags; only pure kmalloc paths keep RECLAIMABLE.
+
+Commits: `ad98acf326bc7`
+
 ### Fair btree transaction slot allocation
 
 Per-process fair allocation of btree transaction slots, split into
@@ -98,7 +136,8 @@ CPU in retry loops. Fixes:
 - `__GFP_RECLAIMABLE` on btree node data pages and all other large/hot
   allocations (journal, bio, compression workspaces, key cache, write
   buffer, darray defaults) so the pages become reclaimable and the
-  shrinker can free whole pageblocks.
+  shrinker can free whole pageblocks. (Later scoped in `ad98acf326bc7`
+  to pure kmalloc paths only — vmalloc strips and WARNs on it.)
 - `__GFP_NORETRY` on direct kmalloc paths so bcachefs never triggers
   direct compaction itself; raised shrinker seeks (sysfs-tunable) so
   kcompactd prefers reclaiming page cache over btree nodes; kmalloc
