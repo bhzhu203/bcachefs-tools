@@ -58,6 +58,8 @@ c_extern! {
     pub fn __bch2_trans_get(c: *mut c::bch_fs, fn_idx: c_uint) -> *mut c::btree_trans;
     pub fn bch2_trans_put(trans: *mut c::btree_trans);
     pub fn bch2_trans_throttle_update(c: *mut c::bch_fs);
+    pub fn bch2_trans_admission_release(trans: *mut c::btree_trans);
+    pub fn bch2_trans_admission_reacquire(trans: *mut c::btree_trans) -> c_int;
     pub fn bch2_current_has_btree_trans(c: *mut c::bch_fs) -> bool;
     pub static mut bch2_btree_transaction_fns: [*const c_char; c::BCH_TRANSACTIONS_NR as usize];
     pub fn bch2_trans_get_fn_idx(fn_: *const c_char) -> c_uint;

@@ -558,6 +558,7 @@ pub struct bch_fs {
      * still gets its progress in dmesg.
      */
     pub stdio_progress_reader: bool,
+    pub stall_watchdog: *mut c::task_struct,
     pub loglevel: c_uint,
     pub prev_loglevel: c_uint,
     /*

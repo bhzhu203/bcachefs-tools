@@ -61,6 +61,12 @@ $(obj)/bch2_getdents_layout.h: FORCE
 		"$(if $(KBUILD_EXTMOD),$(objtree)/vmlinux,)" $@
 clean-files += bch2_getdents_layout.h
 
+# Embed the git describe output into the module so dmesg shows exactly which source built it.
+# Format: tag-distance-gcommit-dirty (e.g. v1.39.2-96-gd67e39b7f24b6-dirty)
+# Falls back to "unknown" when compiled outside a git tree (e.g. tarball).
+bcachefs-git-version := $(shell git -C $(src) describe --always --dirty 2>/dev/null || echo unknown)
+subdir-ccflags-y += -DBCACHEFS_GIT_VERSION='"$(bcachefs-git-version)"'
+
 obj-$(CONFIG_BCACHEFS_FS)	+= bcachefs.o
 
 bcachefs-y		:=			\
@@ -140,6 +146,7 @@ bcachefs-y		:=			\
 	journal/reclaim.o			\
 	journal/sb.o				\
 	journal/seq_blacklist.o			\
+	journal/stall_watchdog.o		\
 	journal/validate.o			\
 	journal/write.o				\
 	opts.o					\

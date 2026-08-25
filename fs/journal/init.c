@@ -7,6 +7,7 @@
 #include "journal/reclaim.h"
 #include "journal/sb.h"
 #include "journal/seq_blacklist.h"
+#include "journal/stall_watchdog.h"
 
 #include "alloc/foreground.h"
 #include "alloc/replicas.h"
@@ -474,6 +475,7 @@ void bch2_fs_journal_stop(struct journal *j)
 		return;
 
 	bch2_journal_reclaim_stop(j);
+	bch2_stall_watchdog_stop(container_of(j, struct bch_fs, journal));
 
 #ifdef CONFIG_BCACHEFS_DEBUG
 	j->stop_thread = current;
@@ -557,7 +559,7 @@ int bch2_fs_journal_start(struct journal *j, struct journal_start_info info)
 
 	nr = max(nr, JOURNAL_PIN);
 
-	init_fifo(&j->pin, roundup_pow_of_two(nr), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOWARN);
+	init_fifo(&j->pin, roundup_pow_of_two(nr), GFP_KERNEL|__GFP_NOWARN);
 	if (!j->pin.data) {
 		bch_err(c, "error allocating journal pin fifo: %llu dirty journal entries (%llu-%llu), %zu bytes",
 			cur_seq - last_seq, last_seq, cur_seq,
@@ -810,7 +812,7 @@ int bch2_fs_journal_init_rw(struct journal *j)
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 
 	j->free_buf_size = j->buf_size_want = JOURNAL_ENTRY_SIZE_MIN;
-	j->free_buf = kvmalloc(j->free_buf_size, GFP_KERNEL|__GFP_RECLAIMABLE);
+	j->free_buf = kvmalloc(j->free_buf_size, GFP_KERNEL);
 	if (!j->free_buf)
 		return bch_err_throw(c, ENOMEM_journal_buf);
 
@@ -828,7 +830,7 @@ int bch2_fs_journal_init_rw(struct journal *j)
 	j->in_flight.size = 256;
 	j->in_flight.mask = 255;
 	j->in_flight.data = kvmalloc_array(256, sizeof(*j->in_flight.data),
-					   GFP_KERNEL|__GFP_RECLAIMABLE);
+					   GFP_KERNEL);
 	if (!j->in_flight.data)
 		return bch_err_throw(c, ENOMEM_journal_buf);
 
