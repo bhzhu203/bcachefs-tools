@@ -746,6 +746,7 @@ struct bch_fs {
 	 * still gets its progress in dmesg.
 	 */
 	bool			stdio_progress_reader;
+	struct task_struct	*stall_watchdog;
 	unsigned		loglevel;
 	unsigned		prev_loglevel;
 	/*

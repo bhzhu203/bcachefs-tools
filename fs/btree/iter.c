@@ -2018,7 +2018,7 @@ static noinline btree_path_idx_t btree_paths_realloc(struct btree_trans *trans,
 			  sizeof(struct btree_trans_paths) +
 			  nr * sizeof(struct btree_path) +
 			  nr * sizeof(btree_path_idx_t) + 8 +
-			  nr * sizeof(struct btree_insert_entry), GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NOFAIL);
+			  nr * sizeof(struct btree_insert_entry), GFP_KERNEL|__GFP_NOFAIL);
 
 	unsigned long *paths_allocated = p;
 	memcpy(paths_allocated, trans->paths_allocated, BITS_TO_LONGS(trans->nr_paths) * sizeof(unsigned long));
@@ -4184,6 +4184,73 @@ skip_throttle:
 
 	closure_init_stack_release(&trans->ref);
 	return trans;
+}
+
+/*
+ * Temporarily drop this trans's admission-control slot, for waits that can
+ * block indefinitely on a condition only other transactions can satisfy
+ * (e.g. the btree write dirty-ratio throttle, which clears when
+ * btree_node_write_work completions run). Sleeping in such a wait while
+ * holding a slot wedges the fs: completions are WQ workers drawing from the
+ * same throttle_bg pool, so slots held by sleepers can never be freed.
+ *
+ * Caller must hold no btree locks (call under drop_locks_do) and must pair
+ * with bch2_trans_admission_reacquire() once the wait finishes.
+ */
+void bch2_trans_admission_release(struct btree_trans *trans)
+{
+	struct bch_fs *c = trans->c;
+
+	if (!trans->throttled)
+		return;
+
+	struct semaphore *pool = trans->throttle_bg
+		? &c->btree.trans.throttle_bg
+		: &c->btree.trans.throttle_fg;
+	atomic_dec(&c->btree.trans.nr_active);
+	up(pool);
+	atomic_dec(&c->btree.trans.per_proc_slots[trans->throttle_bucket]);
+	trans->throttled = false;
+}
+
+int bch2_trans_admission_reacquire(struct btree_trans *trans)
+{
+	struct bch_fs *c = trans->c;
+
+	if (trans->throttled)
+		return 0;
+
+	/*
+	 * Admission control may have been disabled (e.g. non-rotational
+	 * devices registered) while we were waiting: the pools were
+	 * re-initialized, so there is nothing to reacquire.
+	 */
+	if (!READ_ONCE(c->btree.trans.throttle_enabled))
+		return 0;
+
+	unsigned bucket = trans->throttle_bucket;
+	atomic_t *slot = &c->btree.trans.per_proc_slots[bucket];
+	unsigned per_proc_limit = READ_ONCE(c->opts.trans_per_proc_limit);
+
+	while (!atomic_add_unless(slot, 1, per_proc_limit)) {
+		if (test_bit(BCH_FS_stopping, &c->flags))
+			return -EROFS;
+		cond_resched();
+	}
+
+	struct semaphore *pool = trans->throttle_bg
+		? &c->btree.trans.throttle_bg
+		: &c->btree.trans.throttle_fg;
+	while (down_timeout(pool, 30 * HZ)) {
+		if (test_bit(BCH_FS_stopping, &c->flags)) {
+			atomic_dec(slot);
+			return -EROFS;
+		}
+		cond_resched();
+	}
+	atomic_inc(&c->btree.trans.nr_active);
+	trans->throttled = true;
+	return 0;
 }
 
 #ifdef CONFIG_BCACHEFS_DEBUG
