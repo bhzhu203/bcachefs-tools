@@ -1309,7 +1309,7 @@ static inline struct bch_read_bio *read_extent_rbio_alloc(struct btree_trans *tr
 						  &c->bio_read_split),
 				 orig, failed);
 
-		gfp_t gfp = GFP_NOIO;
+		gfp_t gfp = GFP_NOIO|__GFP_RECLAIMABLE;
 
 		/*
 		 * Only skip zeroing if we can detect if the device lied and

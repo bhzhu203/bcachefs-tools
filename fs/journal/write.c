@@ -591,7 +591,7 @@ static CLOSURE_CALLBACK(journal_write_submit)
 		 */
 		struct bio *bio = bch2_bio_map_and_chain(ca->disk_sb.bdev,
 				w->data, sectors << 9, ptr->offset,
-				opf, GFP_NOIO, &ja->bio_set);
+				opf, GFP_NOIO|__GFP_RECLAIMABLE, &ja->bio_set);
 		struct journal_bio *jbio =
 			container_of(bio, struct journal_bio, bio);
 
