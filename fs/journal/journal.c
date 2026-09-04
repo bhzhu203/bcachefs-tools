@@ -974,7 +974,11 @@ int bch2_journal_res_get_slowpath(struct journal *j, struct journal_res *res,
 		   total_wait / HZ, bch2_err_str(ret));
 	bch2_journal_debug_to_text(&buf, j);
 	bch2_print_str(c, KERN_ERR, buf.buf);
+	bch2_stall_dump_meminfo(c);
 	bch2_stall_dump_stacks(c);
+
+	/* Cheap self-rescue: make sure the reclaim thread is awake and trying. */
+	journal_reclaim_kick(&c->journal);
 
 	/*
 	 * On HDD, journal can deadlock when a transaction holds btree locks
