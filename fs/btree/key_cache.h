@@ -4,11 +4,29 @@
 
 #include "btree/bkey.h"
 
+/*
+ * Absolute cap on dirty key cache entries.
+ *
+ * The dirty-ratio watermarks below scale with cache size, so on a cache that
+ * grows to millions of entries (e.g. alloc-key churn during snapshot deletion
+ * on a big disk) they permit millions of dirty, journal-pinned entries -
+ * gigabytes of slab that the journal can't unpin until btree writes complete,
+ * and that OOM-killing userspace can't touch. Cap the dirty set absolutely;
+ * the excess trips the same must_wait backpressure used by the ratio
+ * watermarks (commit.c waits on journal reclaim, which flushes dirty keys and
+ * advances the journal). Reclaim-watermark transactions bypass the check, so
+ * the flush path itself never stalls on this.
+ *
+ * At ~512 bytes per entry this bounds dirty key-cache slab to ~512MB.
+ */
+#define BCH_KEY_CACHE_DIRTY_MAX		(1UL << 20)
+
 static inline size_t bch2_nr_btree_keys_need_flush(struct bch_fs *c)
 {
 	size_t nr_dirty = atomic_long_read(&c->btree.key_cache.nr_dirty);
 	size_t nr_keys = atomic_long_read(&c->btree.key_cache.nr_keys);
-	size_t max_dirty = 1024 + nr_keys  / 2;
+	size_t max_dirty = min(1024 + nr_keys / 2,
+			       BCH_KEY_CACHE_DIRTY_MAX * 3 / 4);
 
 	return max_t(ssize_t, 0, nr_dirty - max_dirty);
 }
@@ -17,7 +35,8 @@ static inline ssize_t __bch2_btree_key_cache_must_wait(struct bch_fs *c)
 {
 	size_t nr_dirty = atomic_long_read(&c->btree.key_cache.nr_dirty);
 	size_t nr_keys = atomic_long_read(&c->btree.key_cache.nr_keys);
-	size_t max_dirty = 4096 + (nr_keys * 3) / 4;
+	size_t max_dirty = min(4096 + (nr_keys * 3) / 4,
+			       BCH_KEY_CACHE_DIRTY_MAX);
 
 	return nr_dirty - max_dirty;
 }
@@ -31,7 +50,8 @@ static inline bool bch2_btree_key_cache_wait_done(struct bch_fs *c)
 {
 	size_t nr_dirty = atomic_long_read(&c->btree.key_cache.nr_dirty);
 	size_t nr_keys = atomic_long_read(&c->btree.key_cache.nr_keys);
-	size_t max_dirty = 2048 + (nr_keys * 5) / 8;
+	size_t max_dirty = min(2048 + (nr_keys * 5) / 8,
+			       BCH_KEY_CACHE_DIRTY_MAX);
 
 	return nr_dirty <= max_dirty;
 }
