@@ -36,6 +36,14 @@ echo "install-to-kernel: copying fs/ -> $dst"
 rm -rf "$dst"
 cp -a "$src/fs" "$dst"
 
+# The kernel tree isn't a git repo, so the copied Makefile's `git describe`
+# fails and the module would print "loading (git: unknown)". Snapshot this
+# checkout's version into the copy; the Makefile falls back to this file.
+# --dirty appends a suffix when there are uncommitted changes.
+ver=$(git -C "$src" describe --always --dirty 2>/dev/null || echo unknown)
+printf '%s\n' "$ver" > "$dst/.bcachefs-git-version"
+echo "install-to-kernel: version: $ver"
+
 # fs/Kconfig: source bcachefs's Kconfig from inside the block-filesystem section
 # (bcachefs depends on BLOCK). Anchor after btrfs, which is reliably present and
 # block-dependent.
