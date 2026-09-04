@@ -63,8 +63,9 @@ clean-files += bch2_getdents_layout.h
 
 # Embed the git describe output into the module so dmesg shows exactly which source built it.
 # Format: tag-distance-gcommit-dirty (e.g. v1.39.2-96-gd67e39b7f24b6-dirty)
-# Falls back to "unknown" when compiled outside a git tree (e.g. tarball).
-bcachefs-git-version := $(shell git -C $(src) describe --always --dirty 2>/dev/null || echo unknown)
+# Falls back to .bcachefs-git-version (written by scripts/install-to-kernel.sh
+# when copying into a kernel tree, which isn't a git repo), then "unknown".
+bcachefs-git-version := $(shell git -C $(src) describe --always --dirty 2>/dev/null || cat $(src)/.bcachefs-git-version 2>/dev/null || echo unknown)
 subdir-ccflags-y += -DBCACHEFS_GIT_VERSION='"$(bcachefs-git-version)"'
 
 obj-$(CONFIG_BCACHEFS_FS)	+= bcachefs.o
