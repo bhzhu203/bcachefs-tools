@@ -612,6 +612,16 @@ struct btree_trans_commit_hook {
 
 #define BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS	NSEC_PER_MSEC
 
+/*
+ * Consecutive transaction restarts without a single successful iteration
+ * after which bch2_trans_begin() forces a sleep. Normal restart loops
+ * (lockrestart_do, for_each_btree_key) converge within a handful of
+ * iterations even under heavy contention; 100 consecutive failures with
+ * zero progress is always pathological. The counter resets on any
+ * non-restart begin, so this can never latch.
+ */
+#define BTREE_TRANS_RESTART_STORM_LIMIT		100
+
 struct btree_trans_paths {
 	unsigned long		nr_paths;
 	struct btree_path	paths[];
@@ -714,6 +724,13 @@ struct btree_trans {
 	u8			throttle_bucket;
 	enum bch_errcode	restarted:16;
 	u32			restart_count;
+	/*
+	 * Consecutive restarts without a successful iteration; reset on any
+	 * non-restart begin. Used by the restart-storm throttle in
+	 * bch2_trans_begin() — monotonic within a storm, so it cannot be
+	 * frozen by the restart itself.
+	 */
+	u32			restart_storm_count;
 #ifdef CONFIG_BCACHEFS_INJECT_TRANSACTION_RESTARTS
 	u32			restart_count_this_trans;
 #endif
