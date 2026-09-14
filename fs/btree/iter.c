@@ -4099,15 +4099,37 @@ u32 bch2_trans_begin(struct btree_trans *trans)
 #endif
 
 	if (trans->restarted) {
-		/* restart is hot — skip the resched check */
+		/*
+		 * Restart storm throttle: a trans that restarts repeatedly
+		 * without ever completing an iteration burns a CPU — each
+		 * pass does a full path traverse plus (under
+		 * CONFIG_BCACHEFS_DEBUG) a complete ORC stack unwind, and
+		 * nothing in the loop sleeps. cond_resched() won't help:
+		 * it's a no-op when this thread is the only runnable thing
+		 * on its CPU, which is exactly the storm case. After
+		 * BTREE_TRANS_RESTART_STORM_LIMIT consecutive restarts,
+		 * drop locks and sleep one jiffy. No work is discarded and
+		 * no error code changes — the trans just stops monopolising
+		 * a core, giving lock holders and other waiters CPU time to
+		 * make progress. The counter resets on any successful
+		 * iteration, so this can never latch.
+		 */
+		if (++trans->restart_storm_count > BTREE_TRANS_RESTART_STORM_LIMIT) {
+			bch2_trans_unlock(trans);
+			io_schedule_timeout(1);
+			now = local_clock();
+		}
 		bch2_btree_path_traverse_all(trans);
 		trans->notrace_relock_fail = false;
-	} else if (need_resched() ||
-		   time_after64(now, trans->locking_wait.trans_start_time +
-				BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS)) {
-		bch2_trans_unlock(trans);
-		cond_resched();
-		now = local_clock();
+	} else {
+		trans->restart_storm_count = 0;
+		if (need_resched() ||
+		    time_after64(now, trans->locking_wait.trans_start_time +
+				 BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS)) {
+			bch2_trans_unlock(trans);
+			cond_resched();
+			now = local_clock();
+		}
 	}
 
 	trans_set_locked(trans, false);
