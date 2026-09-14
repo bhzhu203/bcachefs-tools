@@ -660,6 +660,16 @@ c_const! {
     pub const BTREE_TRANS_MEM_MAX: u32 = 1 << 16;
 
     pub const BTREE_TRANS_MAX_LOCK_HOLD_TIME_NS: c_long = cs::NSEC_PER_MSEC as c_long;
+
+    /*
+     * Consecutive transaction restarts without a single successful iteration
+     * after which bch2_trans_begin() forces a sleep. Normal restart loops
+     * (lockrestart_do, for_each_btree_key) converge within a handful of
+     * iterations even under heavy contention; 100 consecutive failures with
+     * zero progress is always pathological. The counter resets on any
+     * non-restart begin, so this can never latch.
+     */
+    pub const BTREE_TRANS_RESTART_STORM_LIMIT: u32 = 100;
 }
 
 #[repr(C)]
@@ -783,6 +793,13 @@ nest! {
          */
         pub throttle_bucket: u8,
         pub restart_count: u32,
+        /*
+         * Consecutive restarts without a successful iteration; reset on any
+         * non-restart begin. Used by the restart-storm throttle in
+         * bch2_trans_begin() — monotonic within a storm, so it cannot be
+         * frozen by the restart itself.
+         */
+        pub restart_storm_count: u32,
         #[cfg(CONFIG_BCACHEFS_INJECT_TRANSACTION_RESTARTS)]
         pub restart_count_this_trans: u32,
         /*

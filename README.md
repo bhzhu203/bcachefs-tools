@@ -59,7 +59,7 @@ Commits: `f81ef2b164cfd`, `45a833c9c40f2`, `0604a8c094d35`,
 On HDD-only systems under heavy concurrent workloads (VMs, containers,
 database servers), dozens to hundreds of processes could enter
 uninterruptible D state for hours — `journal_max_open` stalls, load 50+
-with unsaturated IO, no recovery without reboot. Three mechanisms break
+with unsaturated IO, no recovery without reboot. These mechanisms break
 the cycles upstream still does not guard against:
 
 - **Transaction admission control**: a semaphore throttle limiting
@@ -67,18 +67,35 @@ the cycles upstream still does not guard against:
   PF_MEMALLOC and PF_WQ_WORKER contexts bypass it, and acquisition uses
   `down_timeout()` with retry, so reclaim and write-completion workers
   can never deadlock against throttled transactions.
-- **Btree lock wait timeout**: a 30-second timeout in
-  `bch2_six_check_for_deadlock()` restarts any transaction that has
-  been waiting too long for a btree lock. This breaks dependency chains
-  that pass through non-lock resources (journal space, IO completion),
-  which the lock cycle detector cannot see.
+- **Long-wait lock release**: every trans wait goes through
+  `bch2_trans_short_wait_budget()`, which drops all btree locks via
+  `bch2_trans_unlock_long()` once SRCU has been held ~1s. This covers
+  dependency chains through non-lock resources (journal space, IO
+  completion) that the lock cycle detector cannot see. It replaced an
+  earlier 30-second btree-lock wait timeout in
+  `bch2_six_check_for_deadlock()`, now removed: the restart it forced
+  sets `trans->restarted`, which freezes the very timestamp the
+  predicate reads (`trans_start_time` is only refreshed when
+  `!trans->restarted`), so after one firing the waiter aborted *every*
+  subsequent lock attempt instead of parking in the six_lock FIFO — on
+  production this pinned journal reclaim at 100% CPU inside one key
+  cache flush for ~20 hours and froze the whole filesystem.
+- **Restart storm throttle**: a transaction that keeps restarting
+  without completing an iteration spins with no sleep (the restart path
+  deliberately skips the resched check). After 100 consecutive
+  restarts, `bch2_trans_begin()` now drops locks and sleeps a jiffy
+  per iteration; any successful iteration resets the counter, so the
+  throttle itself can never latch.
 - **Background work throttling**: btree cascade-aware throttling for
   writeback and journal reclaim, plus a revert of background IO tuning
   that worsened VM stalls.
 
-Commits: `102879d271660`, `b3ca9a7452e39`, `3bcec538cc3c5`
-(`fb8fe3622ea9a` later dropped the journal-reservation 30s timeout from
-the first commit — upstream's 1s SRCU lock-drop already covers it.)
+Commits: `102879d271660`, `b3ca9a7452e39`, `3bcec538cc3c5`,
+`ed9fc49a5ae82`
+(`fb8fe3622ea9a` dropped the journal-reservation 30s timeout added by
+the first commit, on the grounds that the SRCU lock-drop above covers
+it; `812471c9a8c02` reverted that drop, so the timeout is live in tree
+pending a verdict on why the revert happened.)
 
 ### Btree-cache throttle deadlock/livelock under snapshot deletion
 
