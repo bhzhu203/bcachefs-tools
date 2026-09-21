@@ -1379,30 +1379,47 @@ struct bkey_packed *bch2_bset_search_linear(struct btree *b,
 
 /* Btree node iterator */
 
-static inline void __bch2_btree_node_iter_push(struct btree_node_iter *iter,
+static inline bool __bch2_btree_node_iter_push(struct btree_node_iter *iter,
 			      struct btree *b,
 			      const struct bkey_packed *k,
 			      const struct bkey_packed *end)
 {
-	if (k != end) {
-		struct btree_node_iter_set *pos =
-			&iter->data[__btree_node_iter_used(iter)];
+	if (k == end)
+		return true;
 
-		EBUG_ON(pos >= iter->data + ARRAY_SIZE(iter->data));
-		*pos = (struct btree_node_iter_set) {
-			__btree_node_key_to_offset(b, k),
-			__btree_node_key_to_offset(b, end)
-		};
+	struct btree_node_iter_set *pos =
+		&iter->data[__btree_node_iter_used(iter)];
+
+	/*
+	 * There's at most one entry per bset and MAX_BSETS bsets, so this
+	 * shouldn't ever overrun - but an iter that's gotten corrupted (stale
+	 * or duplicate entries) can reach here with every entry in use. Never
+	 * write past the end of iter->data: return false so the caller can
+	 * rebuild the iter. WARN() because in a non-debug build the old
+	 * EBUG_ON() was a silent out of bounds write:
+	 */
+	if (unlikely(pos >= iter->data + ARRAY_SIZE(iter->data))) {
+		WARN_ONCE(1, "btree node iter overflow, btree %u level %u\n",
+			  b->c.btree_id, b->c.level);
+		return false;
 	}
+
+	*pos = (struct btree_node_iter_set) {
+		__btree_node_key_to_offset(b, k),
+		__btree_node_key_to_offset(b, end)
+	};
+	return true;
 }
 
-void bch2_btree_node_iter_push(struct btree_node_iter *iter,
+bool bch2_btree_node_iter_push(struct btree_node_iter *iter,
 			       struct btree *b,
 			       const struct bkey_packed *k,
 			       const struct bkey_packed *end)
 {
-	__bch2_btree_node_iter_push(iter, b, k, end);
+	bool ret = __bch2_btree_node_iter_push(iter, b, k, end);
+
 	bch2_btree_node_iter_sort(iter, b);
+	return ret;
 }
 
 noinline __flatten __cold
@@ -1648,10 +1665,25 @@ struct bkey_packed *bch2_btree_node_iter_prev_all(struct btree_node_iter *iter,
 	 * prev we picked ends up in slot 0 - sort won't necessarily put it
 	 * there because of duplicate deleted keys:
 	 */
-	struct btree_node_iter_set *set = btree_node_iter_set_find(iter, end) ?:
-		&iter->data[__btree_node_iter_used(iter)];
+	struct btree_node_iter_set *set = btree_node_iter_set_find(iter, end);
 
-	EBUG_ON(set >= iter->data + ARRAY_SIZE(iter->data));
+	if (!set) {
+		unsigned used = __btree_node_iter_used(iter);
+
+		/*
+		 * As in __bch2_btree_node_iter_push(): an iter with stale or
+		 * duplicate entries can have every entry in use while the bset
+		 * we'd need to add isn't tracked. Bail out instead of writing
+		 * past the end of iter->data:
+		 */
+		if (unlikely(used >= ARRAY_SIZE(iter->data))) {
+			WARN_ONCE(1, "btree node iter overflow (prev), btree %u level %u\n",
+				  b->c.btree_id, b->c.level);
+			return NULL;
+		}
+
+		set = &iter->data[used];
+	}
 
 	memmove(&iter->data[1],
 		&iter->data[0],
