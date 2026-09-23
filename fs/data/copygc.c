@@ -667,6 +667,11 @@ s64 bch2_copygc_dev_wait_amount(struct bch_dev *ca, bool *low_on_space)
 	 * quarters of free space so copygc defers until the storm passes. The
 	 * allowance converges to the reserved-space value as the device fills
 	 * up either way.
+	 *
+	 * While widened, the value below comes back > 0 for devices that would
+	 * otherwise need copygc, so copygc_dev_list() won't mark them in
+	 * c->copygc.wants_space - a field nothing reads right now, but the two
+	 * rules share this one number: revisit if upstream starts consuming it.
 	 */
 	s64 free_allowed = __dev_buckets_free(ca, usage, BCH_WATERMARK_stripe) *
 				ca->mi.bucket_size;

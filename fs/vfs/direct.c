@@ -378,11 +378,11 @@ static __always_inline void bch2_dio_write_end(struct dio_write *dio)
 			i_size_write(&inode->v, req->ki_pos);
 	}
 
-	if (dio->op.i_sectors_delta) {
+	if (dio->op.i_sectors_delta || dio->quota_res.sectors) {
 		guard(mutex)(&inode->ei_quota_lock);
 		__bch2_i_sectors_acct(c, inode, &dio->quota_res, dio->op.i_sectors_delta);
+		__bch2_quota_reservation_put(c, inode, &dio->quota_res);
 	}
-	__bch2_quota_reservation_put(c, inode, &dio->quota_res);
 
 	bio_release_pages(bio, false);
 
@@ -550,7 +550,9 @@ static bool bch2_dio_nocow_fast_check(struct bch_write_op *op)
 {
 	struct dio_write *dio = container_of(op, struct dio_write, op);
 
-	return !dio->flush && !dio->iter.count;
+	/* bch2_dio_write_end() takes ei_quota_lock (a mutex) if either is nonzero: */
+	return !dio->flush && !dio->iter.count &&
+		!dio->op.i_sectors_delta && !dio->quota_res.sectors;
 }
 
 static int bch2_dio_reserve_cow(struct bch_write_op *op)
