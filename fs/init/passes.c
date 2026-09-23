@@ -459,10 +459,21 @@ int __bch2_run_explicit_recovery_pass(struct bch_fs *c,
 		return bch_err_throw(c, cannot_rewind_recovery);
 	}
 
-	if (ratelimit)
+	if (ratelimit) {
 		r->passes_ratelimiting |= BIT_ULL(pass);
-	else
+	} else {
 		r->passes_ratelimiting &= ~BIT_ULL(pass);
+
+		/*
+		 * An explicit request supersedes the failing-pass backoff: whoever
+		 * scheduled it knows the condition the pass repairs is present now,
+		 * where the backoff exists to stop automatic recovery from
+		 * hammering, not to swallow repair requests. passes_failing stays
+		 * set - the status remains visible, and a failure rearms the
+		 * backoff.
+		 */
+		r->passes_failing_ratelimit[pass] = (struct recovery_pass_entry) { };
+	}
 
 	bool rewind = recovery_pass_needs_rewind(c, pass);
 
@@ -646,6 +657,14 @@ static int bch2_run_recovery_pass(struct bch_fs *c, enum bch_recovery_pass pass)
  */
 #define RECOVERY_PASS_FAILING_RATELIMIT	100
 
+/*
+ * ...but the backoff is capped: a pass that ran for hours before failing used
+ * to be unschedulable for most of a day - long enough that a repair the
+ * filesystem is asking for (snapshot deletion) sat waiting until someone
+ * noticed and poked it. Retry within the hour at the latest.
+ */
+#define RECOVERY_PASS_FAILING_RATELIMIT_MAX_SECS	3600
+
 int bch2_run_recovery_passes(struct bch_fs *c, u64 orig_passes_to_run, bool failfast)
 {
 	struct bch_fs_recovery *r = &c->recovery;
@@ -678,12 +697,17 @@ int bch2_run_recovery_passes(struct bch_fs *c, u64 orig_passes_to_run, bool fail
 	 */
 	if (!test_bit(BCH_FS_in_fsck, &c->flags)) {
 		u64 failing = r->passes_failing;
+		u64 now = ktime_get_real_seconds();
+
 		while (failing) {
 			unsigned pass = __ffs64(failing);
 			failing &= ~BIT_ULL(pass);
 
-			if (recovery_pass_entry_ratelimited(&r->passes_failing_ratelimit[pass],
-							    RECOVERY_PASS_FAILING_RATELIMIT))
+			const struct recovery_pass_entry *e =
+				&r->passes_failing_ratelimit[pass];
+
+			if (recovery_pass_entry_ratelimited(e, RECOVERY_PASS_FAILING_RATELIMIT) &&
+			    now - le64_to_cpu(e->last_run) < RECOVERY_PASS_FAILING_RATELIMIT_MAX_SECS)
 				orig_passes_to_run &= ~BIT_ULL(pass);
 		}
 	}
