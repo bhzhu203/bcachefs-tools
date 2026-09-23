@@ -2571,8 +2571,8 @@ err:
 		/*
 		 * DIO nocow with all data written and no O_DSYNC flush:
 		 * the completion chain is non-blocking (no ei_quota_lock
-		 * mutex since i_sectors_delta == 0, no flush, no further
-		 * bios). Skip the btree_update_wq hop.
+		 * mutex: no i_sectors_delta and no quota reservation, no
+		 * flush, no further bios). Skip the btree_update_wq hop.
 		 */
 		closure_sync(&op->cl);
 		bch2_nocow_write_done(&op->cl.work);
