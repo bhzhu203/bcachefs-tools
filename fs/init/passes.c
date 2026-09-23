@@ -478,8 +478,12 @@ int __bch2_run_explicit_recovery_pass(struct bch_fs *c,
 		 * hammering, not to swallow repair requests. passes_failing stays
 		 * set - the status remains visible, and a failure rearms the
 		 * backoff.
+		 *
+		 * Single-field atomic store: zeroing last_runtime alone makes the
+		 * ratelimit check (runtime * 100 > elapsed) unconditionally false,
+		 * avoiding a torn 16-byte write racing with the filter's reader.
 		 */
-		r->passes_failing_ratelimit[pass] = (struct recovery_pass_entry) { };
+		WRITE_ONCE(r->passes_failing_ratelimit[pass].last_runtime, cpu_to_le32(0));
 	}
 
 	bool rewind = recovery_pass_needs_rewind(c, pass);
