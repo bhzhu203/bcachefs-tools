@@ -737,6 +737,7 @@
 #include "init/fs.h"
 
 #include "journal/journal.h"
+#include "journal/reclaim.h"
 
 #include "sb/io.h"
 
@@ -1393,6 +1394,16 @@ static noinline int bch2_write_drop_io_error_ptrs(struct bch_write_op *op)
 	return 0;
 }
 
+/*
+ * The 30s journal timeout (bch2_journal_res_get_slowpath()) fires when a
+ * transaction waits for journal space through a write-buffer-flush deadlock;
+ * the error dropping its btree locks is what lets the flush - and the journal
+ * - proceed. Retry the index update once the journal recovers, rather than
+ * surfacing internal congestion to the application as an I/O error; bounded
+ * so that a write which is going to fail still fails.
+ */
+#define BCH_WRITE_INDEX_RETRIES	3
+
 /**
  * __bch2_write_index - after a write, update index to point to new data
  * @op:		bch_write_op to process
@@ -1451,10 +1462,32 @@ static void __bch2_write_index(struct bch_write_op *op)
 
 	if (!bch2_keylist_empty(keys)) {
 		u64 sectors_start = keylist_sectors(keys);
+		unsigned nr_retries = 0;
 
-		ret = !(op->flags & BCH_WRITE_move)
-			? bch2_write_index_default(op)
-			: bch2_data_update_index_update(op);
+		do {
+			ret = !(op->flags & BCH_WRITE_move)
+				? bch2_write_index_default(op)
+				: bch2_data_update_index_update(op);
+
+			if (!bch2_err_matches(ret, BCH_ERR_journal_res_blocked))
+				break;
+
+			if (bch2_journal_error(&c->journal) ||
+			    nr_retries++ >= BCH_WRITE_INDEX_RETRIES)
+				break;
+
+			if (journal_low_on_space(&c->journal)) {
+				bch_err_ratelimited(c,
+					"data write blocked on journal, retrying (%u/%u)",
+					nr_retries, BCH_WRITE_INDEX_RETRIES);
+
+				journal_reclaim_kick(&c->journal);
+				wait_event_freezable_timeout(c->journal.reclaim_wait,
+						bch2_journal_error(&c->journal) ||
+						!journal_low_on_space(&c->journal),
+						HZ * 30);
+			}
+		} while (1);
 
 		BUG_ON(bch2_err_matches(ret, BCH_ERR_transaction_restart));
 		BUG_ON(keylist_sectors(keys) && !ret);
