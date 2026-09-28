@@ -541,7 +541,7 @@ static inline int bch2_btree_iter_verify_ret(struct btree_iter *iter,
 
 /* Btree path: fixups after btree updates */
 
-static bool btree_node_iter_set_set_pos(struct btree_node_iter *iter,
+static void btree_node_iter_set_set_pos(struct btree_node_iter *iter,
 					struct btree *b,
 					struct bset_tree *t,
 					struct bkey_packed *k)
@@ -550,10 +550,10 @@ static bool btree_node_iter_set_set_pos(struct btree_node_iter *iter,
 		if (set->end == t->end_offset) {
 			set->k = __btree_node_key_to_offset(b, k);
 			bch2_btree_node_iter_sort(iter, b);
-			return true;
+			return;
 		}
 
-	return bch2_btree_node_iter_push(iter, b, k, btree_bkey_last(b, t));
+	bch2_btree_node_iter_push(iter, b, k, btree_bkey_last(b, t));
 }
 
 static void __bch2_btree_path_fix_key_modified(struct btree_path *path,
@@ -592,8 +592,7 @@ void bch2_btree_path_fix_key_modified(struct btree_trans *trans,
 	}
 }
 
-static void __bch2_btree_node_iter_fix(struct bch_fs *c,
-				       struct btree_path *path,
+static void __bch2_btree_node_iter_fix(struct btree_path *path,
 				       struct btree *b,
 				       struct btree_node_iter *node_iter,
 				       struct bset_tree *t,
@@ -618,22 +617,8 @@ static void __bch2_btree_node_iter_fix(struct bch_fs *c,
 		 * on), and the rewind is what catches that.
 		 */
 		if (new_u64s &&
-		    bkey_iter_pos_cmp(b, where, &path->pos) >= 0 &&
-		    unlikely(!bch2_btree_node_iter_push(node_iter, b, where, end))) {
-			/*
-			 * iter->data was already full, but this bset's entry
-			 * couldn't be found by its end offset: the iter has
-			 * stale or duplicate entries and can't be repaired in
-			 * place. Rebuild it from scratch at the path's current
-			 * position, rather than writing past the end of
-			 * iter->data. The pos-in-node check is the same
-			 * invariant bch2_btree_path_level_init() asserts
-			 * before re-initing; it can only fail here for an
-			 * external node_iter whose path doesn't reference b:
-			 */
-			if (btree_path_pos_in_node(path, b))
-				bch2_btree_node_iter_init(c, b, node_iter, &path->pos);
-		}
+		    bkey_iter_pos_cmp(b, where, &path->pos) >= 0)
+			bch2_btree_node_iter_push(node_iter, b, where, end);
 	} else {
 		set->end = t->end_offset;
 
@@ -690,22 +675,9 @@ static void __bch2_btree_node_iter_fix(struct bch_fs *c,
 				set_pos = true;
 			}
 
-			if (set_pos &&
-			    unlikely(!btree_node_iter_set_set_pos(node_iter,
-								  b, t, k2))) {
-				/*
-				 * Same corrupted-iter case as the push above:
-				 * this bset isn't tracked and there's no free
-				 * slot. A freshly rebuilt iter is consistent by
-				 * construction (every entry points at the first
-				 * key at/after path->pos), so there's nothing
-				 * left to rewind:
-				 */
-				if (btree_path_pos_in_node(path, b))
-					bch2_btree_node_iter_init(c, b, node_iter,
-								  &path->pos);
-				break;
-			}
+			if (set_pos)
+				btree_node_iter_set_set_pos(node_iter,
+							    b, t, k2);
 		}
 	}
 }
@@ -723,7 +695,7 @@ void bch2_btree_node_iter_fix(struct btree_trans *trans,
 	unsigned i;
 
 	if (node_iter != &path->l[b->c.level].iter) {
-		__bch2_btree_node_iter_fix(trans->c, path, b, node_iter, t,
+		__bch2_btree_node_iter_fix(path, b, node_iter, t,
 					   where, clobber_u64s, new_u64s);
 
 		if (IS_ENABLED(CONFIG_BCACHEFS_DEBUG) &&
@@ -732,7 +704,7 @@ void bch2_btree_node_iter_fix(struct btree_trans *trans,
 	}
 
 	trans_for_each_path_with_node(trans, b, linked, i) {
-		__bch2_btree_node_iter_fix(trans->c, linked, b,
+		__bch2_btree_node_iter_fix(linked, b,
 					   &linked->l[b->c.level].iter, t,
 					   where, clobber_u64s, new_u64s);
 		bch2_btree_path_verify_level(trans, linked, b->c.level);
