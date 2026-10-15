@@ -2549,7 +2549,17 @@ static void bch2_evict_inode(struct inode *vinode)
 #endif
 	truncate_inode_pages_final(&inode->v.i_data);
 
-	cancel_delayed_work_sync(&inode->ei_writeback_timer);
+	/*
+	 * The writeback work's trailing iput() can drop the last reference to
+	 * @inode, evicting it from within the work itself: waiting for the
+	 * work here would then be waiting on ourselves - a deadlock. The work
+	 * is terminating and won't touch @inode again, and the workqueue
+	 * doesn't touch a work item after its callback has returned, so it's
+	 * safe for the inode - which the work is embedded in - to be freed
+	 * here.
+	 */
+	if (current_work() != &inode->ei_writeback_timer.work)
+		cancel_delayed_work_sync(&inode->ei_writeback_timer);
 
 	clear_inode(&inode->v);
 
