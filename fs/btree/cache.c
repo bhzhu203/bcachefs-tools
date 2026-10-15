@@ -864,6 +864,9 @@ static unsigned long bch2_btree_cache_count(struct shrinker *shrink,
 					    struct shrink_control *sc)
 {
 	struct btree_cache_list *list = shrink->private_data;
+	struct bch_fs_btree_cache *bc =
+		container_of(list, struct bch_fs_btree_cache, live[list->idx]);
+	struct bch_fs *c = container_of(bc, struct bch_fs, btree.cache);
 
 	if (static_branch_unlikely(&bch2_btree_shrinker_disabled))
 		return 0;
