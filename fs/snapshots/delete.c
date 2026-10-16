@@ -7,6 +7,8 @@
 #include "btree/bbpos.h"
 #include "btree/update.h"
 
+#include "data/copygc.h"
+
 #include "init/error.h"
 #include "init/damage.h"
 #include "init/progress.h"
@@ -1847,6 +1849,19 @@ int __bch2_delete_dead_snapshots(struct bch_fs *c)
 		darray_exit(&d->eytzinger_delete_list);
 		WRITE_ONCE(d->running, false);
 	}
+
+	/*
+	 * Deletion over: kick copygc once. Copygc paces itself down while the
+	 * pass runs (storm backoff, widened allowance), deferring work until
+	 * the storm passes - but a thread parked in that backoff, or on an
+	 * emptied device list, has no wakeup saved for the moment running
+	 * goes false again: the allocator only kicks it when a bucket is
+	 * freed. The pass ending is precisely the state change that lifts
+	 * those deferrals, so trigger the re-evaluation directly. running is
+	 * already false above, so the woken thread sees the normal (non-storm)
+	 * path.
+	 */
+	bch2_copygc_wakeup(c);
 
 	bch2_recovery_pass_set_no_ratelimit(c, BCH_RECOVERY_PASS_check_snapshots);
 

@@ -596,6 +596,30 @@ bool bch2_copygc_can_make_progress(struct bch_dev *ca)
 }
 
 /*
+ * Allocation starvation: free space at or under the normal reserve level.
+ * This is the same criterion the allocator's blocked path uses to decide
+ * whether to keep waiting on copygc (__dev_buckets_free() > 1 in
+ * alloc_wait_advanced()): below it, threads are parked waiting for copygc to
+ * produce buckets, and copygc must not stop - not for the deletion grace
+ * period, not for the storm backoff - or the parked allocations deadlock
+ * against whatever copygc was deferring to.
+ */
+static bool dev_alloc_starved(struct bch_dev *ca, struct bch_dev_usage usage)
+{
+	return __dev_buckets_free(ca, usage, BCH_WATERMARK_normal) <= 1;
+}
+
+static bool bch2_copygc_alloc_starved(struct bch_fs *c)
+{
+	guard(rcu)();
+
+	for_each_rw_member_rcu(c, ca)
+		if (dev_alloc_starved(ca, bch2_dev_usage_read(ca)))
+			return true;
+	return false;
+}
+
+/*
  * Free space thresholds, as a percentage of capacity. The wait below is
  * free * 5 - capacity: that scale is also the io clock sleep amount, so it
  * stays as written rather than being derived from the percentage.
@@ -668,6 +692,12 @@ s64 bch2_copygc_dev_wait_amount(struct bch_dev *ca, bool *low_on_space)
 	 * allowance converges to the reserved-space value as the device fills
 	 * up either way.
 	 *
+	 * Starvation exempts the widening: free at or under the normal reserve
+	 * means allocations are parked waiting on copygc to produce buckets,
+	 * and the storm is exactly what is holding those buckets back. A device
+	 * that far gone gets no grace period - copygc keeps moving data off it
+	 * mid-storm, since deferring is what starved the allocator.
+	 *
 	 * While widened, the value below comes back > 0 for devices that would
 	 * otherwise need copygc, so copygc_dev_list() won't mark them in
 	 * c->copygc.wants_space - a field nothing reads right now, but the two
@@ -675,7 +705,8 @@ s64 bch2_copygc_dev_wait_amount(struct bch_dev *ca, bool *low_on_space)
 	 */
 	s64 free_allowed = __dev_buckets_free(ca, usage, BCH_WATERMARK_stripe) *
 				ca->mi.bucket_size;
-	if (READ_ONCE(c->snapshots.delete.running))
+	if (READ_ONCE(c->snapshots.delete.running) &&
+	    !dev_alloc_starved(ca, usage))
 		free_allowed = free_allowed * 3 / 4;
 	else
 		free_allowed /= 2;
@@ -843,6 +874,16 @@ static int bch2_copygc_thread(void *arg)
 			 * unproductive run (1s up to 30s). A productive run goes
 			 * again immediately, and normal pacing resumes once the
 			 * pass is over.
+			 *
+			 * Starvation exempts the backoff: free at or under the
+			 * normal reserve means allocations are parked waiting on
+			 * us, and the allocator's kick barely comes - it kicks
+			 * copygc only when a bucket is freed (alloc_wait_advanced),
+			 * which is exactly what is stuck. Sleeping out the
+			 * backoff just repeats the sleep until kick cycle that
+			 * starves them, so while any rw member is that low, keep
+			 * running: the loop's own reschedule points, and the move
+			 * io itself, bound the cost.
 			 */
 			u64 moved_prev = moved_last;
 			u64 moved_now = atomic64_read(&ctxt.stats->sectors_moved);
@@ -853,7 +894,8 @@ static int bch2_copygc_thread(void *arg)
 			}
 			moved_last = moved_now;
 
-			if (moved_now == moved_prev) {
+			if (moved_now == moved_prev &&
+			    !bch2_copygc_alloc_starved(c)) {
 				noop_backoff = clamp(noop_backoff * 2, 1U, 30U);
 
 				set_current_state(TASK_INTERRUPTIBLE);
