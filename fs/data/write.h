@@ -31,7 +31,7 @@ int bch2_sum_sector_overwrites(struct btree_trans *, struct btree_iter *,
 static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 				      struct bch_inode_opts opts)
 {
-	BUILD_BUG_ON(__BCH_WRITE_convert_unwritten >= BITS_PER_TYPE(op->flags));
+	BUILD_BUG_ON(__BCH_WRITE_defer_reservation >= BITS_PER_TYPE(op->flags));
 
 	op->c			= c;
 	op->end_io		= NULL;
