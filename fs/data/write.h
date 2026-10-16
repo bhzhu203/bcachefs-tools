@@ -35,7 +35,7 @@ int bch2_extent_update(struct btree_trans *, subvol_inum,
 static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 				      struct bch_inode_opts opts)
 {
-	BUILD_BUG_ON(__BCH_WRITE_convert_unwritten >= BITS_PER_TYPE(op->flags));
+	BUILD_BUG_ON(__BCH_WRITE_defer_reservation >= BITS_PER_TYPE(op->flags));
 
 	op->c			= c;
 	op->end_io		= NULL;
