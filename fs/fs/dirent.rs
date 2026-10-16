@@ -552,7 +552,7 @@ pub fn readdir(
 
     let trans = crate::btree_trans!(fs);
     let mut iter = BtreeIter::new(&trans, c::btree_id::dirents, pos(dir.inum, ctx.pos()),
-                                  BtreeIterFlags::empty());
+                                  BtreeIterFlags::PREFETCH);
 
     subvolume::for_each_in_subvolume_max_in_trans(&trans, &mut iter, pos(dir.inum, u64::MAX),
                                                   dir.subvol as u32, BtreeIterFlags::PREFETCH, |k| {
