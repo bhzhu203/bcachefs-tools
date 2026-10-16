@@ -16,8 +16,12 @@ Fork changes over upstream
 --------------------------
 
 This fork carries stability and performance work for HDD (rotational
-media) deployments, layered on top of upstream bcachefs (base commit
-`0aeaf7e1f0d6`, 2026-08-20). The 54 commits below are not in upstream.
+media) deployments, layered on top of upstream bcachefs — currently
+rebased onto upstream/master (`1507ece16`, 2026-10-15). The fork is 70
+commits over upstream; the groups below list all of them except this
+section's own documentation commits. The pre-rebase history is
+preserved in this repo as the `backup-261015` branch and the
+`pre-upstream-rebase-261015` tag.
 
 ### Snapshot deletion: throughput, pacing, and storm mitigation
 
@@ -41,18 +45,24 @@ extents that were about to disappear anyway.
   observed at 25-50% CPU spin otherwise) while a deletion pass runs;
   copygc and the other data movers skip extents owned by snapshots
   being deleted (hundreds of GB of wasted moves observed in the field).
-- **Btree path correctness fixes found under the storm**: a cached path
-  node pointer can dangle and the recycled struct btree be reused for a
-  node of a different btree — the lock sequence number is not proof of
-  identity, so the relock and path-reuse sites now verify the node's
-  btree_id before trusting the cache.
+- **Bounded key-cache memory**: dirty key cache entries are capped at
+  1M (~512MB) via the existing must_wait backpressure — alloc-key
+  churn during deletion can otherwise pin gigabytes of slab that
+  reclaim cannot free until btree writes complete (`c04ee0d236675`).
+- **Btree path correctness found under the storm**: a cached path node
+  pointer can dangle and a recycled struct btree be reused for a node
+  of a different btree — the lock sequence number is not proof of
+  identity. Upstream landed the root fix (`9dcc6ee31` forgets unlocked
+  cached pointers to a node changing identity, `999690e20` asserts a
+  relocked node is still the one the path had), so this rebase took
+  upstream's copies and dropped the fork's.
 - **Runtime toggle**: the `snapshot_delete_v2` module param selects the
   v2 scan vs the v1 per-key path.
 
-Commits: `f81ef2b164cfd`, `45a833c9c40f2`, `0604a8c094d35`,
-`bff6910cc9f97`, `a0739e600363e`, `ea6d2ceaaf74f`, `636abd2f51758`,
-`a89c17b4f6b36`, `6c0835ad33283`, `7e7a2b005ada7`, `d59d873285e77`,
-`3c5c1e64f284c`, `617496e55c4c8`, `ec9acb8a98d81`
+Commits: `faf6789fc7cb3`, `79344313d8da4`, `8ab93b9ff92c2`,
+`d28ab3b8c3028`, `121697881252f`, `7a6bdcec2d7bc`, `a5052bae3a1e0`,
+`b1b86befc31d6`, `d9d357a1688e1`, `888eda53dd245`, `9d30f7ec6c8d9`,
+`f767deb812879`, `c04ee0d236675`
 
 ### HDD livelock / journal deadlock defense
 
@@ -89,19 +99,26 @@ the cycles upstream still does not guard against:
 - **Background work throttling**: btree cascade-aware throttling for
   writeback and journal reclaim, plus a revert of background IO tuning
   that worsened VM stalls.
+- **Journal-congestion write errors**: a write whose index update hit
+  the journal-reservation 30s timeout used to surface internal
+  congestion to the application as a write I/O error (WiredTiger write
+  errors observed while snapshot deletion stormed the journal). The
+  index update now retries it, bounded, and when the journal is low on
+  space kicks reclaim and waits on it instead of retrying blind
+  (`5d9189ab32d73`).
 
-Commits: `102879d271660`, `b3ca9a7452e39`, `3bcec538cc3c5`,
-`ed9fc49a5ae82`
-(`fb8fe3622ea9a` dropped the journal-reservation 30s timeout added by
-the first commit, on the grounds that the SRCU lock-drop above covers
-it; `812471c9a8c02` reverted that drop, so the timeout is live in tree
-pending a verdict on why the revert happened.)
+Commits: `3490361f00401`, `a7eb1e3496cdb`, `846e9d42a610c`,
+`ad519a2d26494`, `f025ab0fc7271`, `5d9189ab32d73`
+(The journal-reservation 30s timeout added by the first commit is
+still live: the pair that dropped and then reverted it was a net-zero
+change in code upstream never touched, and was itself dropped in the
+rebase.)
 
 ### Btree-cache throttle deadlock/livelock under snapshot deletion
 
 Two failure shapes observed on HDD while a multi-million-key snapshot
 deletion ran against a live database workload, both diagnosed via a new
-stall watchdog and both fixed in `ad98acf326bc7`:
+stall watchdog and both fixed in `8e358dfa93e52`:
 
 - **Deadlock (whole system unreachable)**: transactions parked in the
   btree-write dirty-ratio throttle (upstream's
@@ -129,11 +146,13 @@ stall watchdog and both fixed in `ad98acf326bc7`:
   dirty/live/in-flight/throttle counters, and every blocked task's
   stack. Zero hot-path overhead; this is what captured both failure
   signatures above on an unreachable-over-SSH machine via netconsole.
+  Later extended to dump system-wide meminfo and key-cache counters,
+  and to kick reclaim on the journal-stuck path (`6441bd034143b`).
 - **`__GFP_RECLAIMABLE` scope fix**: flags reaching vmalloc/kvmalloc
   paths are stripped first — `vmalloc_fix_flags()` WARNs on
   unsupported flags; only pure kmalloc paths keep RECLAIMABLE.
 
-Commits: `ad98acf326bc7`
+Commits: `8e358dfa93e52`, `6441bd034143b`
 
 ### Fair btree transaction slot allocation
 
@@ -141,7 +160,7 @@ Per-process fair allocation of btree transaction slots, split into
 foreground/background priority pools so background scanners cannot
 starve interactive IO, with a sysfs-tunable per-process slot cap.
 
-Commits: `17e76e80990f0`, `599561bd7e52a`, `bf0c32b63eb1b`
+Commits: `d0beab65340a3`, `e64dfb5cffe14`, `77eb7a85f973f`
 
 ### kcompactd0 / memory compaction stabilization
 
@@ -153,16 +172,23 @@ CPU in retry loops. Fixes:
 - `__GFP_RECLAIMABLE` on btree node data pages and all other large/hot
   allocations (journal, bio, compression workspaces, key cache, write
   buffer, darray defaults) so the pages become reclaimable and the
-  shrinker can free whole pageblocks. (Later scoped in `ad98acf326bc7`
-  to pure kmalloc paths only — vmalloc strips and WARNs on it.)
+  shrinker can free whole pageblocks. (Later scoped in `8e358dfa93e52`
+  to pure kmalloc paths only — vmalloc strips and WARNs on it; a final
+  audit swept the missed NOIO sites — compressed-read bounce pages,
+  the journal data bio, the debugfs node-read bio — in
+  `05bc323e80a35`.)
 - `__GFP_NORETRY` on direct kmalloc paths so bcachefs never triggers
   direct compaction itself; raised shrinker seeks (sysfs-tunable) so
   kcompactd prefers reclaiming page cache over btree nodes; kmalloc
   path forced for btree node allocations.
 
-Commits: `34a6669c3769d`, `d0488fbd79ba5`, `6afc4024799c1`,
-`4c75479a955f4`, `fb93fd355ddea`, `7ef2f2d9d51cb`, `5b063e98d3d43`,
-`9ec51c5bd39e0`, `e5c28b43ab04e`, `5aea94b3d73f3`, `169fb6a3d220d`
+Commits: `474473fbcee22`, `345636c9555ca`, `0effaa42d7835`,
+`7e063a059dcf4`, `287ede1c10232`, `26c1fe0b422df`, `9827957b1eb3f`,
+`fb17674a920c5`, `864fc6bf7596c`, `1332282b1cc19`, `70e377a3a8c1b`,
+`05bc323e80a35`, `1bf725fc02c33`
+(`1bf725fc02c33` restores the `container_of()` lookup that upstream's
+journal-replay shrinker writeback call needs — the kcompactd count
+change had dropped it.)
 
 ### Device-aware (HDD) IO scheduling and cache policy
 
@@ -174,24 +200,30 @@ and a fix for the `devs_rotational` bitmap being empty at init (upstream
 lacks this; device-latency based timeouts silently misbehave without
 it).
 
-Commits: `0225bf1f808e5`, `47f49cbb8432c`, `8d2539960832a`,
-`5e82d35701891`
+Commits: `18d0aea1a5057`, `e5705d122157a`, `97dc37ef4c12e`,
+`3f50a850337f8`
 
 ### Read path: cold-cache first read, readahead, random-read detection
 
-- Btree node prefetching on the read and readdir paths, with snapshot
-  ID resolution hoisted out of the per-extent loop — eliminates
-  cold-cache node fetches and redundant subvolume lookups on first
-  access to large directories.
+- Btree node prefetching on the read and readdir paths — eliminates
+  cold-cache node fetches on first access to large directories. (The
+  readdir flag never reached the iterator in the Rust port: it was fed
+  to the peek helper, which ignores it; fixed in `25760530e15e7`.)
 - Shared btree iterator across the readahead window for better HDD NCQ
-  utilization.
+  utilization, snapshot ID resolved once per window. Errors and
+  restarts in the shared loop now go through the plain read loop's
+  protocol (`967f10ceb986c`); a hoist of the snapshot fetch out of the
+  plain read loops was reverted (`c7e1db526b9cf`) — a restart out of
+  the hoisted fetch skipped the iterator's `CLASS()` initialization
+  and carried an uninitialized snapshot into the loop.
 - Random-read detection with an extent map cache, HDD `narrow_crcs`,
   two-stream readahead tracking (avoids false random detection), and
   fixes for random-read suppression, extent cache staleness, and
   readahead folio leaks.
 
-Commits: `8e0e91b775f94`, `2325be458d414`, `9a1ee2e198bb7`,
-`3976b460d777c`, `c19772e888b36`, `db52acfea6dfa`, `05f11a5ffea90`
+Commits: `c1d621e9f7eda`, `c0482666ef4b4`, `17e351793b552`,
+`e7e3b88aa33f9`, `e46e88f4e2c04`, `89cc9c6126620`, `0fb3f980a98d1`,
+`967f10ceb986c`, `25760530e15e7`, `c7e1db526b9cf`
 
 ### nocow write path: throughput and correctness
 
@@ -199,17 +231,29 @@ Commits: `8e0e91b775f94`, `2325be458d414`, `9a1ee2e198bb7`,
   stale check skipped under lock), an expanded nocow lock table
   (1024→4096 buckets) to cut hash-collision waits, single-replica fast
   submit, and per-IO overhead reduction on the nocow DIO path.
+- **Deferred reservation was silently dead**: the nocow DIO path sets
+  the 17th write flag, `defer_reservation` (index 16) — one past the
+  u16 that held the flags, so `BIT(16)` truncated to 0 and both the
+  set and the check were no-ops: those writes ran with no reservation
+  and no ENOSPC check. `bch_write_op.flags` is now u32, with the
+  `BUILD_BUG_ON` pointed at the highest-index flag so the next
+  addition trips it instead of truncating silently (`637d459a52a0e`).
 - Correctness refinements: the snapshot ID is resolved per direct IO
   instead of cached (a stale cached id could send in-place writes into
   snapshot-shared blocks); in-place writes to unwritten extents and
-  fallocate's unwritten extent allocation are preserved.
+  fallocate's unwritten extent allocation are preserved; the DIO
+  completion path puts its quota reservation back under
+  `ei_quota_lock` — it is not atomic ops, two completions on one inode
+  race a plain read-modify-write and the `BUG_ON` can trip
+  (`4d310a81ed538`).
 
-Commits: `f018a15286166`, `a20704f471c55`, `7304faa27089f`,
-`17923e040b587`, `30185cfcfabd8` (`82793cc838970` — this fork's
-"disable unwritten extents under nocow" ENOSPC workaround — was fully
-reverted by `17923e040b587` + `30185cfcfabd8`: upstream's
-`BCH_TRANS_COMMIT_no_enospc` fixes the unwritten→written conversion
-failure natively, so avoiding unwritten extents is no longer needed.)
+Commits: `fad4743a81d47`, `132841049c8f4`, `896d38ef276a9`,
+`dc53e2dd20282`, `3090fe1a5ed60`, `637d459a52a0e`, `4d310a81ed538`
+(`dd71afb57a127` — this fork's "disable unwritten extents under nocow"
+ENOSPC workaround — was fully reverted by `dc53e2dd20282` +
+`3090fe1a5ed60`: upstream's `BCH_TRANS_COMMIT_no_enospc` fixes the
+unwritten→written conversion failure natively, so avoiding unwritten
+extents is no longer needed.)
 
 ### Background maintenance and recovery tuning
 
@@ -220,7 +264,39 @@ under any concurrent foreground IO); recovery pass timing stats for
 mount analysis, with btree bitmap GC thresholds tuned (fragmentation
 4x→2x, periodic check 24h→6h).
 
-Commits: `ee59a08d52575`, `0ec56985a74ed`, `9b205e8b26361`
+- **Failing-pass retry cap**: upstream retries a failing pass on an
+  exponential backoff (2^n × runtime, capped at 20×); the fork caps
+  the window at an hour and lets an explicit request — an fsck, a
+  sysfs trigger, a dependent pass — clear the in-memory backoff
+  immediately, so a repair request is never swallowed by automatic
+  backoff (`53c1912c74e4a`, `cc4cfdb43677c`). Production case:
+  `delete_dead_snapshots` failed after running 766s under a
+  journal-full storm and the uncapped backoff left it unscheduled for
+  21.28 hours — automatic recovery never retried, and the work only
+  happened because the operator poked the sysfs trigger by hand.
+- **Writeback-timer self-deadlock**: `bch2_vfs_writeback_fn()` ends
+  with an `iput()` on the reference it grabbed on entry; when that is
+  the last reference, eviction runs inside the work itself and
+  `bch2_evict_inode()`'s `cancel_delayed_work_sync()` waits on the
+  very work executing it — the kworker parks in D state forever, and
+  the ordered (max_active=1) writeback wq stalls with it
+  (`5ae02e80909ef`).
+
+Commits: `08551ae1fa61a`, `c5316a39a61d8`, `91ee1bd59cc40`,
+`53c1912c74e4a`, `cc4cfdb43677c`, `5ae02e80909ef`
+
+### Build and versioning
+
+The kernel tree is not a git repo, so the in-tree copy's `git describe`
+failed and the loaded module reported "git: unknown", which cost real
+debugging time identifying the module from an OOM log.
+`install-to-kernel.sh` now snapshots `git describe --always --dirty`
+into `.bcachefs-git-version` in the copy (`5b0b88b62ddc9`), and the
+Makefile prefers that snapshot over git — in a git-managed kernel tree
+`git -C $(src) describe` finds the kernel repository and embeds its
+version instead of bcachefs' (`cb795128d013f`).
+
+Commits: `5b0b88b62ddc9`, `cb795128d013f`
 
 This repo primarily consists of the following:
 
