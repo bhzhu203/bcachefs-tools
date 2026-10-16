@@ -17,7 +17,7 @@ Fork changes over upstream
 
 This fork carries stability and performance work for HDD (rotational
 media) deployments, layered on top of upstream bcachefs — currently
-rebased onto upstream/master (`1507ece16`, 2026-10-15). The fork is 70
+rebased onto upstream/master (`1507ece16`, 2026-10-15). The fork is 72
 commits over upstream; the groups below list all of them except this
 section's own documentation commits. The pre-rebase history is
 preserved in this repo as the `backup-261015` branch and the
@@ -45,6 +45,12 @@ extents that were about to disappear anyway.
   observed at 25-50% CPU spin otherwise) while a deletion pass runs;
   copygc and the other data movers skip extents owned by snapshots
   being deleted (hundreds of GB of wasted moves observed in the field).
+  Both brakes yield to allocation starvation: a device whose free space
+  sits at or under the normal reserve — the same line the allocator's
+  blocked path parks waiters on — keeps its normal allowance and skips
+  the backoff, and a finished deletion pass kicks copygc once, because
+  the allocator only kicks copygc when a bucket is freed, which is
+  exactly what is not happening while allocations are parked.
 - **Bounded key-cache memory**: dirty key cache entries are capped at
   1M (~512MB) via the existing must_wait backpressure — alloc-key
   churn during deletion can otherwise pin gigabytes of slab that
@@ -62,7 +68,7 @@ extents that were about to disappear anyway.
 Commits: `faf6789fc7cb3`, `79344313d8da4`, `8ab93b9ff92c2`,
 `d28ab3b8c3028`, `121697881252f`, `7a6bdcec2d7bc`, `a5052bae3a1e0`,
 `b1b86befc31d6`, `d9d357a1688e1`, `888eda53dd245`, `9d30f7ec6c8d9`,
-`f767deb812879`, `c04ee0d236675`
+`f767deb812879`, `c04ee0d236675`, `4717db4b1da0c`
 
 ### HDD livelock / journal deadlock defense
 
