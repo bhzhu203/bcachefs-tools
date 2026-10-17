@@ -875,15 +875,17 @@ static int bch2_copygc_thread(void *arg)
 			 * again immediately, and normal pacing resumes once the
 			 * pass is over.
 			 *
-			 * Starvation exempts the backoff: free at or under the
-			 * normal reserve means allocations are parked waiting on
-			 * us, and the allocator's kick barely comes - it kicks
-			 * copygc only when a bucket is freed (alloc_wait_advanced),
-			 * which is exactly what is stuck. Sleeping out the
-			 * backoff just repeats the sleep until kick cycle that
-			 * starves them, so while any rw member is that low, keep
-			 * running: the loop's own reschedule points, and the move
-			 * io itself, bound the cost.
+			 * No progress always backs off, even when allocation
+			 * starved: a tight loop cannot make progress when the
+			 * pred is skipping every candidate (deleted snapshots),
+			 * and spinning only steals CPU and transactions from the
+			 * delete pass that is about to free those extents.
+			 * Starvation caps the backoff at 1s instead: allocations
+			 * are parked waiting on us and the allocator's kick
+			 * barely comes - it kicks copygc only when a bucket is
+			 * freed (alloc_wait_advanced), which is exactly what is
+			 * stuck - so stay responsive to new candidates and kicks
+			 * instead of sleeping out the 30s maximum.
 			 */
 			u64 moved_prev = moved_last;
 			u64 moved_now = atomic64_read(&ctxt.stats->sectors_moved);
@@ -894,9 +896,10 @@ static int bch2_copygc_thread(void *arg)
 			}
 			moved_last = moved_now;
 
-			if (moved_now == moved_prev &&
-			    !bch2_copygc_alloc_starved(c)) {
-				noop_backoff = clamp(noop_backoff * 2, 1U, 30U);
+			if (moved_now == moved_prev) {
+				noop_backoff = bch2_copygc_alloc_starved(c)
+					? 1U
+					: clamp(noop_backoff * 2, 1U, 30U);
 
 				set_current_state(TASK_INTERRUPTIBLE);
 				if (kick == READ_ONCE(c->copygc.kick_count))
