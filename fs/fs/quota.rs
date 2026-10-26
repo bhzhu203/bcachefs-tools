@@ -14,6 +14,8 @@
 
 use crate::btree::bkey::{BkeySC, BkeyWhole};
 use crate::c;
+#[cfg(CONFIG_BCACHEFS_QUOTA)]
+use crate::util::alloc::__GFP_RECLAIMABLE;
 use crate::util::vstructs::Unvalidated;
 use crate::errcode::{ret_to_c, BchError};
 use crate::fs::Fs;
@@ -361,7 +363,7 @@ mod vfs {
         let qtypes = enabled_qtypes(fs);
 
         for i in set_qtypes(qtypes) {
-            fs.quotas.get(i).table.prealloc(qid.q[i] as usize, c::GFP_KERNEL | c::__GFP_RECLAIMABLE)?;
+            fs.quotas.get(i).table.prealloc(qid.q[i] as usize, c::GFP_KERNEL | __GFP_RECLAIMABLE)?;
         }
 
         with_locks(fs, qtypes, qid, |locked, msgs| {
@@ -402,8 +404,8 @@ mod vfs {
 
         for i in set_qtypes(qtypes) {
             let table = &fs.quotas.get(i).table;
-            table.prealloc(src.q[i] as usize, c::GFP_KERNEL | c::__GFP_RECLAIMABLE)?;
-            table.prealloc(dst.q[i] as usize, c::GFP_KERNEL | c::__GFP_RECLAIMABLE)?;
+            table.prealloc(src.q[i] as usize, c::GFP_KERNEL | __GFP_RECLAIMABLE)?;
+            table.prealloc(dst.q[i] as usize, c::GFP_KERNEL | __GFP_RECLAIMABLE)?;
         }
 
         with_locks(fs, qtypes, dst, |locked, msgs| {
@@ -458,7 +460,7 @@ mod vfs {
 
         let id = k.k.p.offset as usize;
         let mut l = Locked::new(fs, ty);
-        l.q.table.prealloc(id, c::GFP_KERNEL | c::__GFP_RECLAIMABLE)?;
+        l.q.table.prealloc(id, c::GFP_KERNEL | __GFP_RECLAIMABLE)?;
         let mq = l.get_mut(id);
 
         for (m, d) in mq.c.iter_mut().zip(dq.c) {

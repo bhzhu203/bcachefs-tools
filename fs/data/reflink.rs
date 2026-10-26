@@ -42,6 +42,7 @@ use crate::fs::Fs;
 use crate::init::error::{id, BkeyValidate};
 use crate::snapshots::subvolume;
 use crate::types::{GenRadix, Le32, Le64};
+use crate::util::alloc::__GFP_RECLAIMABLE;
 use crate::util::ffi::Opaque;
 use crate::util::kernel::fatal_signal_pending;
 use crate::util::vstructs::{cast_plain, cast_plain_mut, Validated};
@@ -373,7 +374,7 @@ fn gc_reflink_add(fs: &Fs, k: BkeySC<'_>) -> Result<(), BchError> {
         }
     }
 
-    let r = table.get_or_alloc(nr, c::GFP_KERNEL | c::__GFP_RECLAIMABLE)
+    let r = table.get_or_alloc(nr, c::GFP_KERNEL | __GFP_RECLAIMABLE)
         .map_err(|_| fs.err(bch_errcode::BCH_ERR_ENOMEM_gc_reflink_start))?;
     r.offset   = offset;
     r.size     = k.k.size;

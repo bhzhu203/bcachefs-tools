@@ -9,6 +9,17 @@ pub use kernel::alloc::{flags, AllocError, Flags, KBox, KVVec};
 
 #[cfg(not(kernel))]
 pub use bcachefs_shim::alloc::{flags, AllocError, Flags, KVVec};
+
+use crate::c;
+
+/// For kmalloc()-only allocations, as genradix nodes are: bindgen gives the
+/// kernel bindings the bit index but not the flag, and userspace's headers
+/// define it as 0.
+#[cfg(kernel)]
+pub const __GFP_RECLAIMABLE: c::gfp_t = 1 << c::___GFP_RECLAIMABLE_BIT as u32;
+#[cfg(not(kernel))]
+pub const __GFP_RECLAIMABLE: c::gfp_t = c::__GFP_RECLAIMABLE;
+
 /// In userspace, a Box is a KBox.
 #[cfg(not(kernel))]
 pub type KBox<T> = std::boxed::Box<T>;

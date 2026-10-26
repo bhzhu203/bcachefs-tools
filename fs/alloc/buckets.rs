@@ -21,6 +21,7 @@ use crate::init::passes;
 use crate::opts::{data_type_str, prt_data_type};
 use crate::locking::Lock;
 use crate::types::{bits_to_longs, Le64};
+use crate::util::alloc::__GFP_RECLAIMABLE;
 use crate::util::ffi::Opaque;
 use crate::util::log::LogMsg;
 use crate::util::percpu::{Counters, PerCpu};
@@ -425,7 +426,7 @@ fn trigger_stripe_ptr(t: &TransAttempt<'_, '_>, k: BkeySC<'_>, p: &c::extent_ptr
     }
 
     if flags.contains(UpdateTriggerFlags::GC) {
-        let Ok(m) = fs.ec.gc_stripe_alloc(idx, c::GFP_KERNEL | c::__GFP_RECLAIMABLE | c::__GFP_NOWARN) else {
+        let Ok(m) = fs.ec.gc_stripe_alloc(idx, c::GFP_KERNEL | __GFP_RECLAIMABLE | c::__GFP_NOWARN) else {
             bch_err!(fs, "error allocating memory for gc_stripes, idx {idx}");
             return fs.throw(bch_errcode::BCH_ERR_ENOMEM_mark_stripe_ptr);
         };
