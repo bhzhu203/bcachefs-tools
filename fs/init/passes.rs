@@ -759,6 +759,7 @@ fn run_pass(fs: &Fs, pass: Pass) -> Result<(), BchError> {
         log_start(fs, LogLevel::INFO, message!("{}...", pass.name()));
     }
 
+    let start_ns = ktime_get_ns();
     let start_time = ktime_get_real_seconds();
     // SAFETY: a pass, of a live filesystem
     let ret = ret_to_result_void(unsafe { RUN[pass as usize](fs.as_ptr()) });
@@ -792,6 +793,8 @@ fn run_pass(fs: &Fs, pass: Pass) -> Result<(), BchError> {
         }
         return ret;
     }
+
+    fs.times[c::bch_time_stats::BCH_TIME_recovery_pass as usize].update(start_ns);
 
     if !silent {
         log_cont(fs, message!(" done ({} seconds)", ktime_get_real_seconds() - start_time));
