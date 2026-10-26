@@ -989,8 +989,7 @@ impl c::bucket_bitmap {
         let w = l.published();
 
         if w.buckets.with(|words| words.is_empty()) {
-            w.buckets.rebuild_gfp(bits_to_longs(ca.mi.nbuckets as usize),
-                                  c::GFP_KERNEL | c::__GFP_RECLAIMABLE | c::__GFP_NOWARN, |_| ())
+            w.buckets.rebuild(bits_to_longs(ca.mi.nbuckets as usize), |_| ())
                 .or_else(|_| ca.fs().throw(bch_errcode::BCH_ERR_ENOMEM_backpointer_mismatches_bitmap))?;
         }
 
@@ -1009,8 +1008,7 @@ impl c::bucket_bitmap {
             return Ok(());
         }
 
-        w.buckets.rebuild_gfp(bits_to_longs(nbuckets as usize),
-                              c::GFP_KERNEL | c::__GFP_RECLAIMABLE | c::__GFP_NOWARN, |new| {
+        w.buckets.rebuild(bits_to_longs(nbuckets as usize), |new| {
             w.buckets.with(|old| {
                 for (n, o) in new.iter_mut().zip(old) {
                     *n.get_mut() = o.load(Ordering::Relaxed);

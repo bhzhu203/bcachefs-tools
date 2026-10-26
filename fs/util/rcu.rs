@@ -358,16 +358,6 @@ impl<T: RcuElement, H: RcuElement> RcuArray<T, H> {
     pub unsafe fn rebuild_head<E>(&self, nr: usize, h: H, fill: impl FnOnce(&mut [T]) -> Result<(), E>)
         -> Result<Result<(), E>, AllocError>
     {
-        unsafe { self.rebuild_head_gfp(nr, h, c::GFP_KERNEL, fill) }
-    }
-
-    /// rebuild_head(), allocating with @gfp.
-    ///
-    /// # Safety
-    /// As RcuBuf::replace(): the caller holds the writers' lock.
-    pub unsafe fn rebuild_head_gfp<E>(&self, nr: usize, h: H, gfp: c::gfp_t, fill: impl FnOnce(&mut [T]) -> Result<(), E>)
-        -> Result<Result<(), E>, AllocError>
-    {
         const { assert!(size_of::<T>() != 0) };
 
         let tail = RcuArrayBuf::<T, H>::TAIL;
@@ -376,7 +366,7 @@ impl<T: RcuElement, H: RcuElement> RcuArray<T, H> {
             .filter(|&b| b <= i32::MAX as usize)
             .ok_or(AllocError)?;
 
-        let new = NonNull::new(unsafe { c::rust_kvzalloc_gfp(bytes, gfp) }.cast::<RcuArrayHead<H>>())
+        let new = NonNull::new(unsafe { c::rust_kvzalloc(bytes) }.cast::<RcuArrayHead<H>>())
             .ok_or(AllocError)?;
 
         // SAFETY: @bytes are ours, zeroed - valid elements; no reader sees
@@ -418,14 +408,6 @@ impl<T: RcuElement> RcuArray<T> {
     /// # Safety
     /// As RcuBuf::replace(): the caller holds the writers' lock.
     pub unsafe fn grow_to(&self, nr: usize) -> Result<(), AllocError> {
-        unsafe { self.grow_to_gfp(nr, c::GFP_KERNEL) }
-    }
-
-    /// grow_to(), allocating with @gfp.
-    ///
-    /// # Safety
-    /// As RcuBuf::replace(): the caller holds the writers' lock.
-    pub unsafe fn grow_to_gfp(&self, nr: usize, gfp: c::gfp_t) -> Result<(), AllocError> {
         let old = unsafe { self.get_locked() };
         if nr <= old.len() {
             return Ok(());
@@ -440,7 +422,7 @@ impl<T: RcuElement> RcuArray<T> {
         // SAFETY: the caller's; the old elements don't change under the
         // writers' lock, and a bytewise copy of one is valid (RcuElement)
         unsafe {
-            self.rebuild_gfp((bytes - tail) / size_of::<T>(), gfp, |new| {
+            self.rebuild((bytes - tail) / size_of::<T>(), |new| {
                 core::ptr::copy_nonoverlapping(old.as_ptr(), new.as_mut_ptr(), old.len())
             })
         }
@@ -452,14 +434,6 @@ impl<T: RcuElement> RcuArray<T> {
     /// As RcuBuf::replace(): the caller holds the writers' lock.
     pub unsafe fn rebuild(&self, nr: usize, fill: impl FnOnce(&mut [T])) -> Result<(), AllocError> {
         unsafe { self.rebuild_head(nr, (), |s| Ok::<_, core::convert::Infallible>(fill(s))) }.map(|_| ())
-    }
-
-    /// rebuild(), allocating with @gfp.
-    ///
-    /// # Safety
-    /// As RcuBuf::replace(): the caller holds the writers' lock.
-    pub unsafe fn rebuild_gfp(&self, nr: usize, gfp: c::gfp_t, fill: impl FnOnce(&mut [T])) -> Result<(), AllocError> {
-        unsafe { self.rebuild_head_gfp(nr, (), gfp, |s| Ok::<_, core::convert::Infallible>(fill(s))) }.map(|_| ())
     }
 }
 
@@ -490,12 +464,6 @@ impl<T: RcuElement> RcuArrayWriter<T> {
         // SAFETY: we're the writer - a writer is had only through its lock's
         // guard
         unsafe { self.0.rebuild(nr, fill) }
-    }
-
-    /// rebuild(), allocating with @gfp.
-    pub fn rebuild_gfp(&self, nr: usize, gfp: c::gfp_t, fill: impl FnOnce(&mut [T])) -> Result<(), AllocError> {
-        // SAFETY: as rebuild()'s
-        unsafe { self.0.rebuild_gfp(nr, gfp, fill) }
     }
 }
 

@@ -502,7 +502,7 @@ impl TableWrite<'_> {
     /// Room for @id's entry: as bch2_snapshot_t_mut().
     fn make_room(&mut self, id: u32) -> Result<(), AllocError> {
         // SAFETY: we hold table_lock
-        unsafe { self.table.grow_to_gfp(table_idx(id) + 1, c::GFP_KERNEL | c::__GFP_RECLAIMABLE) }
+        unsafe { self.table.grow_to(table_idx(id) + 1) }
     }
 }
 

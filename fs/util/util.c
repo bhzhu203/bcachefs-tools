@@ -1465,11 +1465,6 @@ void *rust_kvzalloc(size_t size)
 	return kvzalloc(size, GFP_KERNEL);
 }
 
-void *rust_kvzalloc_gfp(size_t size, gfp_t gfp)
-{
-	return kvzalloc(size, gfp);
-}
-
 void rust_kvfree(void *p)
 {
 	kvfree(p);
