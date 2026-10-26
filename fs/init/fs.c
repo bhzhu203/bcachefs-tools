@@ -54,6 +54,11 @@
 #include "init/passes.h"
 #include "init/fs.h"
 
+/* kbuild passes this; the userspace build doesn't */
+#ifndef BCACHEFS_GIT_VERSION
+#define BCACHEFS_GIT_VERSION "unknown"
+#endif
+
 #include "journal/init.h"
 #include "journal/journal.h"
 #include "journal/reclaim.h"
@@ -1808,6 +1813,8 @@ static void bcachefs_exit(void)
 
 static int __init bcachefs_init(void)
 {
+	pr_info("bcachefs: loading (git: %s)\n", BCACHEFS_GIT_VERSION);
+
 	bch2_bkey_pack_test();
 
 	bch2_futex_init();
