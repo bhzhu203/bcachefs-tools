@@ -318,7 +318,7 @@ static int six_lock_wait_fifo_realloc(struct six_lock *lock,
 		kfree(new_wf);
 
 	unsigned new_size = old_size * 2;
-	new_wf = kzalloc(struct_size(new_wf, data, new_size), GFP_KERNEL);
+	new_wf = kzalloc(struct_size(new_wf, data, new_size), GFP_KERNEL|__GFP_RECLAIMABLE);
 	if (!new_wf)
 		return -ENOMEM;
 

@@ -418,6 +418,14 @@ impl<T: RcuElement> RcuArray<T> {
     /// # Safety
     /// As RcuBuf::replace(): the caller holds the writers' lock.
     pub unsafe fn grow_to(&self, nr: usize) -> Result<(), AllocError> {
+        unsafe { self.grow_to_gfp(nr, c::GFP_KERNEL) }
+    }
+
+    /// grow_to(), allocating with @gfp.
+    ///
+    /// # Safety
+    /// As RcuBuf::replace(): the caller holds the writers' lock.
+    pub unsafe fn grow_to_gfp(&self, nr: usize, gfp: c::gfp_t) -> Result<(), AllocError> {
         let old = unsafe { self.get_locked() };
         if nr <= old.len() {
             return Ok(());
@@ -432,7 +440,7 @@ impl<T: RcuElement> RcuArray<T> {
         // SAFETY: the caller's; the old elements don't change under the
         // writers' lock, and a bytewise copy of one is valid (RcuElement)
         unsafe {
-            self.rebuild((bytes - tail) / size_of::<T>(), |new| {
+            self.rebuild_gfp((bytes - tail) / size_of::<T>(), gfp, |new| {
                 core::ptr::copy_nonoverlapping(old.as_ptr(), new.as_mut_ptr(), old.len())
             })
         }

@@ -3929,7 +3929,7 @@ void *__bch2_trans_kmalloc(struct btree_trans *trans, size_t size, unsigned long
 	EBUG_ON(new_bytes > BTREE_TRANS_MEM_MAX);
 
 	new_mem = allocate_dropping_locks_norelock(trans,
-					kmalloc(new_bytes, _gfp|__GFP_NOWARN|__GFP_NORETRY));
+					kmalloc(new_bytes, _gfp|__GFP_NOWARN|__GFP_NORETRY|__GFP_RECLAIMABLE));
 	if (!new_mem) {
 		new_mem = mempool_alloc(&c->btree.trans.malloc_pool, GFP_KERNEL|__GFP_RECLAIMABLE|__GFP_NORETRY);
 		new_bytes = BTREE_TRANS_MEM_MAX;
@@ -4163,7 +4163,7 @@ static inline struct btree_trans *bch2_trans_alloc(struct bch_fs *c)
 		}
 	}
 
-	struct btree_trans *trans = mempool_alloc(&c->btree.trans.pool, GFP_NOIO);
+	struct btree_trans *trans = mempool_alloc(&c->btree.trans.pool, GFP_NOIO|__GFP_RECLAIMABLE);
 	memset(trans, 0, sizeof(*trans));
 
 	seqmutex_lock(&c->btree.trans.lock);
@@ -4262,7 +4262,7 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 		if (s->max_mem) {
 			unsigned expected_mem_bytes = roundup_pow_of_two(s->max_mem);
 
-			trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL|__GFP_NOWARN|__GFP_NORETRY);
+			trans->mem = kmalloc(expected_mem_bytes, GFP_KERNEL|__GFP_NOWARN|__GFP_NORETRY|__GFP_RECLAIMABLE);
 			if (likely(trans->mem))
 				trans->mem_bytes = expected_mem_bytes;
 		}
