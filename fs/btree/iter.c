@@ -4211,6 +4211,8 @@ void bch2_trans_throttle_update(struct bch_fs *c)
 
 	if (is_hdd && !c->btree.trans.throttle_enabled) {
 		sema_init(&c->btree.trans.throttle, 64);
+		for (int i = 0; i < BTREE_TRANS_PER_PROC_BUCKETS; i++)
+			atomic_set(&c->btree.trans.per_proc_slots[i], 0);
 		WRITE_ONCE(c->btree.trans.throttle_enabled, true);
 	} else if (!is_hdd && c->btree.trans.throttle_enabled) {
 		WRITE_ONCE(c->btree.trans.throttle_enabled, false);
@@ -4247,11 +4249,32 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	 * shutting down.
 	 */
 	bool throttled = false;
+	unsigned throttle_bucket = 0;
 	if (unlikely(READ_ONCE(c->btree.trans.throttle_enabled))) {
 		if (!(current->flags & (PF_MEMALLOC|PF_WQ_WORKER))) {
-			while (down_timeout(&c->btree.trans.throttle, 30 * HZ)) {
+			throttle_bucket = (unsigned)task_tgid_vnr(current)
+						% BTREE_TRANS_PER_PROC_BUCKETS;
+			atomic_t *slot = &c->btree.trans.per_proc_slots[throttle_bucket];
+
+			/*
+			 * Stage 1: wait for a per-process slot. A process (thread
+			 * group) is capped at BTREE_TRANS_PER_PROC_LIMIT concurrent
+			 * slots, so a VM with many vCPUs/IO threads cannot
+			 * monopolize the global pool and starve shell/systemd/
+			 * journald.
+			 */
+			while (!atomic_add_unless(slot, 1, BTREE_TRANS_PER_PROC_LIMIT)) {
 				if (test_bit(BCH_FS_stopping, &c->flags))
 					return ERR_PTR(-EROFS);
+				cond_resched();
+			}
+
+			/* Stage 2: acquire a global slot */
+			while (down_timeout(&c->btree.trans.throttle, 30 * HZ)) {
+				if (test_bit(BCH_FS_stopping, &c->flags)) {
+					atomic_dec(slot);
+					return ERR_PTR(-EROFS);
+				}
 				cond_resched();
 			}
 			atomic_inc(&c->btree.trans.nr_active);
@@ -4278,6 +4301,7 @@ struct btree_trans *__bch2_trans_get(struct bch_fs *c, unsigned fn_idx)
 	trans->fn_idx		= fn_idx;
 	trans->locking_wait.task = current;
 	trans->throttled	= throttled;
+	trans->throttle_bucket	= (u8)throttle_bucket;
 	trans->journal_replay_not_finished =
 		unlikely(!test_bit(JOURNAL_replay_done, &c->journal.flags)) &&
 		atomic_inc_not_zero(&c->journal_keys.ref);
@@ -4394,6 +4418,7 @@ void bch2_trans_put(struct btree_trans *trans)
 	if (unlikely(trans->throttled)) {
 		atomic_dec(&c->btree.trans.nr_active);
 		up(&c->btree.trans.throttle);
+		atomic_dec(&c->btree.trans.per_proc_slots[trans->throttle_bucket]);
 	}
 
 	trans_for_each_update(trans, i)

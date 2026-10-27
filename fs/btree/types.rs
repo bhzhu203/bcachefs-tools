@@ -795,7 +795,13 @@ nest! {
             begin_may_drop_updates:         bool,
             has_interior_updates:           bool,
             throttled:                      bool,
-            __pad17:                        u14,
+            /*
+             * Hash bucket in bch_fs_btree_trans.per_proc_slots[] that this
+             * transaction holds a per-process slot in. Valid iff throttled.
+             * Used by bch2_trans_put() to decrement the right counter.
+             */
+            throttle_bucket:                u8,
+            __pad17:                        u6,
             #[bits(16)] pub restarted: cs::bch_errcode,
             __pad:                          u16,
         },
@@ -923,6 +929,11 @@ c_default!(btree_transaction_stats);
 c_const! {
     #[c_int]
     pub const BCH_TRANSACTIONS_NR: u32 = 128;
+
+    #[c_int]
+    pub const BTREE_TRANS_PER_PROC_BUCKETS: u32 = 251; /* prime, collision-tolerant */
+    #[c_int]
+    pub const BTREE_TRANS_PER_PROC_LIMIT: u32 = 8; /* max slots per thread group */
 }
 
 #[repr(C)]
@@ -944,10 +955,17 @@ pub struct bch_fs_btree_trans {
      * transactions compete for the same btree nodes, lock wait times
      * explode because each transaction holds locks while waiting for
      * slow HDD IO.
+     *
+     * Per-process fairness: the fixed-size hash table of atomic
+     * counters (indexed by task_tgid_vnr) caps each process at
+     * BTREE_TRANS_PER_PROC_LIMIT slots, so a single heavy-IO process
+     * (VM with many vCPUs/IO threads) cannot monopolize the global
+     * pool and starve shell/systemd/journald.
      */
     pub throttle: c::semaphore,
     pub nr_active: AtomicI32,
     pub throttle_enabled: bool,
+    pub per_proc_slots: [AtomicI32; cs::BTREE_TRANS_PER_PROC_BUCKETS as usize],
 
     pub stats: [cs::btree_transaction_stats; cs::BCH_TRANSACTIONS_NR as usize],
 
