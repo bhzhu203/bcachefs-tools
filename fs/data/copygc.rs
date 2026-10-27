@@ -69,7 +69,7 @@ use crate::types::Fifo;
 use crate::util::alloc::{flags::GFP_KERNEL, kbox_pin_init, KBox, KVVec};
 use crate::util::alloc::AllocError;
 use crate::util::cuckoo::{Cuckoo, Entry, Registration};
-use crate::util::kernel::{cond_resched, WRITE};
+use crate::util::kernel::{cond_resched, nsecs_to_jiffies, NSEC_PER_SEC, WRITE};
 use crate::util::kthread::{Kthread, KthreadSelf};
 use crate::util::rcu::read_lock;
 use crate::util::sleep::{sleep_until, Sleep};
@@ -705,6 +705,8 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
     let set = &set;
     let mut devs = KVVec::new();
     let mut kick = me.kicks();
+    let mut noop_backoff = 0u32;
+    let mut moved_last = 0u64;
 
     Kthread::set_freezable();
 
@@ -775,6 +777,41 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
         fs.copygc.run_count.set(fs.copygc.run_count.get().wrapping_add(1));
         fs.copygc.run_done.wake();
         ret = r;
+
+        if fs.snapshots.delete.running.load(Relaxed) {
+            /*
+             * Storm mode: sectors_seen counts every backpointer resolved,
+             * whether or not the pred decided to move anything - during a
+             * deletion storm that's nearly all of them, so the seen-based
+             * did_work below never sleeps while copygc moves nothing and
+             * fights the delete pass for btree node locks. Credit only
+             * sectors moved: drain in-flight moves before declaring a run
+             * unproductive, then back off on wall clock, doubling per
+             * consecutive unproductive run (1s up to 30s). A productive run
+             * goes again immediately, and normal pacing resumes once the
+             * pass is over.
+             */
+            let moved_prev = moved_last;
+            let mut moved_now = cg.ctxt.stats().sectors_moved();
+
+            if moved_now == moved_prev {
+                cg.wait_done(true);
+                moved_now = cg.ctxt.stats().sectors_moved();
+            }
+            moved_last = moved_now;
+
+            if moved_now == moved_prev {
+                noop_backoff = noop_backoff.wrapping_mul(2).clamp(1, 30);
+
+                let _ = sleep_until(Sleep::INTERRUPTIBLE.freezable()
+                                        .timeout(nsecs_to_jiffies(noop_backoff as u64 * NSEC_PER_SEC)),
+                    || (me.kicked_since(kick) || Kthread::should_stop()).then_some(()));
+            }
+            continue;
+        }
+
+        noop_backoff = 0;
+        moved_last = cg.ctxt.stats().sectors_moved();
 
         if wait == 0 && !did_work {
             let capacity = match fs.min_rw_member_capacity() {
