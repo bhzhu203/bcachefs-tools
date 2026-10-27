@@ -241,9 +241,23 @@ fn dev_wait_amount(ca: &c::bch_dev) -> (i64, bool) {
         return (wait, low_on_space);
     }
 
+    /* Half of the current free space - except while snapshot deletion is
+     * running: an invalidation storm from a large deletion can push
+     * fragmented space far past the normal allowance, and copygc charging
+     * into the middle of it competes for the same io. Widen the allowance
+     * to three quarters of free space while the deletion pass runs, so
+     * copygc defers until the storm passes; it converges to the reserved
+     * space as the device fills up either way. */
     let watermark = c::bch_watermark::BCH_WATERMARK_stripe;
-    let fragmented_allowed = (ca.free_buckets_at(&usage, watermark).wrapping_add(ca.buckets_reserved(watermark))
-        .wrapping_mul(bucket_size).wrapping_add(leaving as u64) >> 1) as i64;
+    let free_allowed = ca.free_buckets_at(&usage, watermark).wrapping_mul(bucket_size);
+    let free_allowed = if fs.snapshots.delete.running.load(Relaxed) {
+        free_allowed.wrapping_mul(3) / 4
+    } else {
+        free_allowed / 2
+    };
+    let fragmented_allowed = (ca.buckets_reserved(watermark).wrapping_mul(bucket_size)
+        .wrapping_add(leaving as u64) >> 1)
+        .wrapping_add(free_allowed) as i64;
     let fragmented = usage_full.d.iter().enumerate()
         .filter(|&(i, _)| accounting::data_type_movable(c::bch_data_type(i as u32)))
         .fold(0u64, |f, (_, d)| f.wrapping_add(d.fragmented)) as i64;

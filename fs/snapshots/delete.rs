@@ -81,7 +81,7 @@ use crate::{bch_err, bch_err_msg, bch_info, bch_notice, fs_inconsistent, fsck_er
             trans_inconsistent};
 use core::ffi::c_ulong;
 use core::fmt;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use cstruct_macros::c_export;
 use pin_init::{pin_data, pin_init, PinInit};
 
@@ -162,6 +162,9 @@ pub(crate) struct SnapshotDelete {
     key_rate:          Lock<c::spinlock_t, c::bch_ratelimit>,
     /// Which sweep the progress describes: 1 or 2.
     version:           AtomicU32,
+    /// A deletion pass is in progress: copygc paces itself down while this
+    /// is set - widened fragmentation allowance, storm backoff.
+    pub(crate) running: AtomicBool,
     progress:          c::progress_indicator,
     /// Commit-batch staging watermark for key migration, learned: halves on
     /// transaction memory exhaustion and persists across ranges. 0 = use the
@@ -176,6 +179,7 @@ impl SnapshotDelete {
             nodes    <- new_lock!(None),
             key_rate <- new_lock!(Default::default()),
             version:  AtomicU32::new(0),
+            running:  AtomicBool::new(false),
             progress: ::pin_init::Zeroable::zeroed(),
             key_mem_watermark: AtomicU32::new(0),
         })
@@ -1675,6 +1679,8 @@ pub fn delete_dead_snapshots_forced(fs: &Fs) -> Result<(), BchError> {
 
     passes::assert_run_lock_held(fs);
 
+    d.running.store(true, Ordering::Relaxed);
+
     d.progress.reset();
 
     *d.key_rate.lock() = c::bch_ratelimit {
@@ -1685,6 +1691,10 @@ pub fn delete_dead_snapshots_forced(fs: &Fs) -> Result<(), BchError> {
     let ret = refused(delete_dead_snapshots_locked(fs));
 
     *d.nodes.write() = None;
+
+    // Cleared before the kick: the woken copygc thread must see the normal
+    // (non-storm) path.
+    d.running.store(false, Ordering::Relaxed);
 
     // The pass ending is the state change that lifts deletion's claims on
     // copygc: kick it once, so a thread that paced itself down for the
