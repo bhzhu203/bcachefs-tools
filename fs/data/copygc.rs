@@ -820,14 +820,15 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
              * goes again immediately, and normal pacing resumes once the
              * pass is over.
              *
-             * Starvation exempts the backoff: free at or under the normal
-             * reserve means allocations are parked waiting on us, and the
-             * allocator's kick barely comes - it kicks copygc only when a
-             * bucket is freed, which is exactly what is stuck. Sleeping out
-             * the backoff just repeats the sleep-until-kick cycle that
-             * starves them, so while any rw member is that low, keep
-             * running: the loop's own reschedule points, and the move io
-             * itself, bound the cost.
+             * No progress always backs off, even when allocation starved: a
+             * tight loop cannot make progress when the pred is skipping every
+             * candidate (deleted snapshots), and spinning only steals CPU
+             * and transactions from the delete pass that is about to free
+             * those extents. Starvation caps the backoff at 1s instead:
+             * allocations are parked waiting on us and the allocator's kick
+             * barely comes - it kicks copygc only when a bucket is freed,
+             * which is exactly what is stuck - so stay responsive to new
+             * candidates and kicks instead of sleeping out the 30s maximum.
              */
             let moved_prev = moved_last;
             let mut moved_now = cg.ctxt.stats().sectors_moved();
@@ -838,8 +839,12 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
             }
             moved_last = moved_now;
 
-            if moved_now == moved_prev && !alloc_starved(fs) {
-                noop_backoff = noop_backoff.wrapping_mul(2).clamp(1, 30);
+            if moved_now == moved_prev {
+                noop_backoff = if alloc_starved(fs) {
+                    1
+                } else {
+                    noop_backoff.wrapping_mul(2).clamp(1, 30)
+                };
 
                 let _ = sleep_until(Sleep::INTERRUPTIBLE.freezable()
                                         .timeout(nsecs_to_jiffies(noop_backoff as u64 * NSEC_PER_SEC)),
