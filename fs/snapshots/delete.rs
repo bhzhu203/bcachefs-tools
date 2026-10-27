@@ -108,6 +108,15 @@ crate::module_param! {
     perm = 0o644, desc = "Snapshot deletion commit batch staging watermark, as a divisor of the 64K transaction bump allocator: 4 8 16 32 (default 16)";
 }
 
+crate::module_param! {
+    /// A/B toggle for the v2 snapshot deletion scan: 0 forces the v1 per-key
+    /// path. The on-disk incompat feature still forces v1 on filesystems that
+    /// predate v2; the parameter is read first, so turning it off never
+    /// requests the feature.
+    pub(crate) static snapshot_delete_v2: bool = true;
+    perm = 0o644, desc = "Use the v2 snapshot deletion scan (default on; 0 forces the v1 path)";
+}
+
 // ── State ────────────────────────────────────────────────────────────────
 
 /// Pacing for small deletions, in keys migrated per second.
@@ -600,8 +609,9 @@ fn node_delete(t: &TransAttempt<'_, '_>, id: u32) -> Result<(), BchError> {
         }
     }
 
-    if fs.request_incompat_feature(
-            c::bcachefs_metadata_version::bcachefs_metadata_version_snapshot_deletion_v2).is_ok() {
+    if snapshot_delete_v2.get() &&
+       fs.request_incompat_feature(
+           c::bcachefs_metadata_version::bcachefs_metadata_version_snapshot_deletion_v2).is_ok() {
         // Retain parent/child pointers; don't destroy information if we have
         // to repair:
         let v = s.v_mut();
@@ -1530,8 +1540,9 @@ fn delete_dead_snapshots_locked(fs: &Fs) -> Result<(), BchError> {
 
     bch_info!(fs, "{}", NodesData { fs, nodes: run.nodes });
 
-    if fs.request_incompat_feature(
-            c::bcachefs_metadata_version::bcachefs_metadata_version_snapshot_deletion_v2).is_ok() {
+    if snapshot_delete_v2.get() &&
+       fs.request_incompat_feature(
+           c::bcachefs_metadata_version::bcachefs_metadata_version_snapshot_deletion_v2).is_ok() {
         delete_dead_snapshot_keys_v2(&trans, &run)?;
     } else {
         delete_dead_snapshot_keys_v1(&trans, &run)?;
