@@ -71,6 +71,7 @@ use crate::snapshots::check_snapshots;
 use crate::snapshots::snapshot;
 use crate::util::alloc::{flags::GFP_KERNEL, KVVec};
 use crate::util::eytzinger::Eytzinger1;
+use crate::util::ffi::Opaque;
 use crate::util::kernel::local_clock;
 use crate::util::kthread::Kthread;
 use crate::util::log::{self, LogLevel, LogMsg};
@@ -81,6 +82,7 @@ use crate::{bch_err, bch_err_msg, bch_info, bch_notice, fs_inconsistent, fsck_er
 use core::ffi::c_ulong;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
+use cstruct_macros::c_export;
 use pin_init::{pin_data, pin_init, PinInit};
 
 crate::module_param! {
@@ -1410,6 +1412,29 @@ fn delete_dead_snapshots_locked(fs: &Fs) -> Result<(), BchError> {
     }
 
     Ok(())
+}
+
+/// True if keys owned by @id are being dropped or migrated by snapshot
+/// deletion that's currently running. Data movers should skip such extents:
+/// moving doomed data wastes IO, and moving migrating keys races the deletion
+/// walker - surviving data can be defragmented after deletion completes.
+///
+/// The lists are published under the RwSem and cleared at exit, so reading
+/// them under it is safe; no deletion running means there's nothing to see.
+#[c_export]
+pub fn bch2_snapshot_is_deleted(c: &Opaque<c::bch_fs>, id: u32) -> bool {
+    if id == 0 {
+        return false;
+    }
+
+    let d = &Fs::from_c(c).snapshots.delete;
+    let nodes = d.nodes.read();
+    let Some(nodes) = nodes.as_ref() else {
+        return false;
+    };
+
+    nodes.delete_leaves.contains(&id) ||
+        nodes.delete_interior.iter().any(|i| i.id == id)
 }
 
 /// A refusal means "repair first, then retry", not failure: the check that
