@@ -247,10 +247,18 @@ fn dev_wait_amount(ca: &c::bch_dev) -> (i64, bool) {
      * into the middle of it competes for the same io. Widen the allowance
      * to three quarters of free space while the deletion pass runs, so
      * copygc defers until the storm passes; it converges to the reserved
-     * space as the device fills up either way. */
+     * space as the device fills up either way.
+     *
+     * Starvation exempts the widening: free at or under the normal reserve
+     * means allocations are parked waiting on copygc to produce buckets, and
+     * the storm is exactly what is holding those buckets back. A device that
+     * far gone gets no grace period - copygc keeps moving data off it
+     * mid-storm, since deferring is what starved the allocator. */
     let watermark = c::bch_watermark::BCH_WATERMARK_stripe;
     let free_allowed = ca.free_buckets_at(&usage, watermark).wrapping_mul(bucket_size);
-    let free_allowed = if fs.snapshots.delete.running.load(Relaxed) {
+    let free_allowed = if fs.snapshots.delete.running.load(Relaxed) &&
+        !dev_alloc_starved(ca, &usage)
+    {
         free_allowed.wrapping_mul(3) / 4
     } else {
         free_allowed / 2
@@ -277,6 +285,27 @@ fn dev_wait_amount(ca: &c::bch_dev) -> (i64, bool) {
 /// coming. mark_lock held, as dev_wait_amount().
 fn can_make_progress(ca: &c::bch_dev) -> bool {
     ca.copygc_in_flight.load(Relaxed) != 0 || dev_wait_amount(ca).0 <= 0
+}
+
+/// Allocation starvation: free space at or under the normal reserve level.
+/// This is the same criterion the allocator's blocked path uses to decide
+/// whether to keep waiting on copygc (free_buckets_at(normal) > 1): below it,
+/// threads are parked waiting for copygc to produce buckets, and copygc must
+/// not stop - not for the deletion grace period, not for the storm backoff -
+/// or the parked allocations deadlock against whatever copygc was deferring
+/// to.
+fn dev_alloc_starved(ca: &c::bch_dev, usage: &c::bch_dev_usage) -> bool {
+    ca.free_buckets_at(usage, c::bch_watermark::BCH_WATERMARK_normal) <= 1
+}
+
+fn alloc_starved(fs: &Fs) -> bool {
+    let rcu = read_lock();
+    for ca in fs.rw_devs_rcu(&rcu) {
+        if dev_alloc_starved(ca, &ca.usage_read_fast()) {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Picking buckets ──────────────────────────────────────────────────────
@@ -790,6 +819,15 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
              * consecutive unproductive run (1s up to 30s). A productive run
              * goes again immediately, and normal pacing resumes once the
              * pass is over.
+             *
+             * Starvation exempts the backoff: free at or under the normal
+             * reserve means allocations are parked waiting on us, and the
+             * allocator's kick barely comes - it kicks copygc only when a
+             * bucket is freed, which is exactly what is stuck. Sleeping out
+             * the backoff just repeats the sleep-until-kick cycle that
+             * starves them, so while any rw member is that low, keep
+             * running: the loop's own reschedule points, and the move io
+             * itself, bound the cost.
              */
             let moved_prev = moved_last;
             let mut moved_now = cg.ctxt.stats().sectors_moved();
@@ -800,7 +838,7 @@ fn thread(fs: &Fs, me: &KthreadSelf<'_>) -> Result<(), BchError> {
             }
             moved_last = moved_now;
 
-            if moved_now == moved_prev {
+            if moved_now == moved_prev && !alloc_starved(fs) {
                 noop_backoff = noop_backoff.wrapping_mul(2).clamp(1, 30);
 
                 let _ = sleep_until(Sleep::INTERRUPTIBLE.freezable()
