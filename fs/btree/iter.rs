@@ -226,6 +226,14 @@ impl<'f> BtreeTrans<'f> {
         }
     }
 
+    /// begin(), for a caller discarding staged updates it never committed:
+    /// there's no restart to say so, and bch2_trans_begin() would report the
+    /// drop.
+    pub fn begin_may_drop_updates(&self) -> TransAttempt<'_, 'f> {
+        let _may_drop = TransMayDropUpdates::new(self);
+        self.begin()
+    }
+
     pub fn verify_not_restarted(&self, restart_count: u32) {
         unsafe {
             if (*self.raw()).restart_count != restart_count {

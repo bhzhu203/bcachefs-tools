@@ -55,8 +55,8 @@ use crate::alloc::buckets::DiskReservation;
 use crate::btree::bkey::{pos, spos, BkeyI, BkeySC, Typed, POS_MIN};
 use crate::btree::bkey::prelude::*;
 use crate::btree::iter::{
-    commit_do, lockrestart_do, BtreeIter, BtreeIterFlags, BtreeTrans, CommitFlags, TransAttempt,
-    TransBkey, UpdateTriggerFlags,
+    commit_do, is_restart, lockrestart_do, BtreeIter, BtreeIterFlags, BtreeTrans, CommitFlags,
+    TransAttempt, TransBkey, UpdateTriggerFlags,
 };
 use crate::c;
 use crate::c::bch_recovery_pass::*;
@@ -99,6 +99,15 @@ crate::module_param! {
     perm = 0o644, desc = "Cancel snapshot deletion before the inode keys are deleted";
 }
 
+crate::module_param! {
+    /// Staging watermark for snapshot deletion commit batches, as a divisor
+    /// of the transaction bump allocator (BTREE_TRANS_MEM_MAX): larger
+    /// divisor = smaller, safer batches. A per-fs learned value overrides it
+    /// once a commit has overflowed the allocator.
+    pub(crate) static snapshot_delete_mem_div: u32 = 16;
+    perm = 0o644, desc = "Snapshot deletion commit batch staging watermark, as a divisor of the 64K transaction bump allocator: 4 8 16 32 (default 16)";
+}
+
 // ── State ────────────────────────────────────────────────────────────────
 
 /// Pacing for small deletions, in keys migrated per second.
@@ -138,13 +147,18 @@ pub(crate) struct SnapshotDelete {
     /// across its btree work, so it's never taken for write with btree
     /// locks held: lockdep sees the cycle.
     #[pin]
-    nodes:    Lock<c::rw_semaphore, Option<DeleteNodes>>,
+    nodes:             Lock<c::rw_semaphore, Option<DeleteNodes>>,
     /// Paces per-key migration when the deletion backlog is small.
     #[pin]
-    key_rate: Lock<c::spinlock_t, c::bch_ratelimit>,
+    key_rate:          Lock<c::spinlock_t, c::bch_ratelimit>,
     /// Which sweep the progress describes: 1 or 2.
-    version:  AtomicU32,
-    progress: c::progress_indicator,
+    version:           AtomicU32,
+    progress:          c::progress_indicator,
+    /// Commit-batch staging watermark for key migration, learned: halves on
+    /// transaction memory exhaustion and persists across ranges. 0 = use the
+    /// module parameter's default; stored clamped >= 1 so 0 stays reserved
+    /// for "unset".
+    key_mem_watermark: AtomicU32,
 }
 
 impl SnapshotDelete {
@@ -154,6 +168,7 @@ impl SnapshotDelete {
             key_rate <- new_lock!(Default::default()),
             version:  AtomicU32::new(0),
             progress: ::pin_init::Zeroable::zeroed(),
+            key_mem_watermark: AtomicU32::new(0),
         })
     }
 
@@ -965,6 +980,154 @@ fn delete_dead_snapshot_keys_v1(trans: &BtreeTrans<'_>, run: &Run<'_>) -> Result
     delete_dead_snapshot_keys_v1_btree(trans, inodes, run)
 }
 
+/// Keys staged per transaction when migrating/dropping a dying snapshot's
+/// keys. The memory watermark below is the real throttle; this count only
+/// bounds journal entry size and lock fan-out if staged updates are tiny.
+const SNAPSHOT_DELETE_COMMIT_BATCH_MAX: usize = 1024;
+
+/// Commit batching for migrating/dropping a dying snapshot's keys: the memory
+/// watermark is the real throttle - like BtreeTrans::commit_lazy_if_full(),
+/// but the divisor is the snapshot_delete_mem_div module parameter (default
+/// /16), so the batch adapts to key size. The watermark itself backs off
+/// (halving) whenever the commit path overflows the allocator, since
+/// commit-phase memory - disk accounting arrays grow by powers of two -
+/// scales with the batch.
+fn delete_dead_snapshot_keys_batched(
+    trans: &BtreeTrans<'_>,
+    btree: c::btree_id,
+    start: c::bpos,
+    end:   c::bpos,
+    res:   &DiskReservation<'_>,
+    run:   &Run<'_>,
+) -> Result<(), BchError> {
+    let fs = trans.fs();
+    let d = &fs.snapshots.delete;
+    let iter_flags = BtreeIterFlags::PREFETCH | BtreeIterFlags::ALL_SNAPSHOTS;
+
+    let mut iter = BtreeIter::new(trans, btree, start, iter_flags);
+
+    /*
+     * Staging watermark, adaptive: the commit path's own memory (disk
+     * accounting arrays grow by powers of two, plus per-update trigger
+     * allocations) scales with the batch, so a batch that fit the staging
+     * watermark can still exhaust the bump allocator. The default divisor
+     * (snapshot_delete_mem_div, /16) leaves ~4x headroom for that (worst
+     * observed: 16K staged needed ~48K more at commit); halve on exhaustion
+     * and remember the watermark in @d so later ranges start at the learned
+     * value instead of re-failing each time.
+     */
+    let mut mem_watermark = d.key_mem_watermark.load(Ordering::Relaxed);
+    if mem_watermark == 0 {
+        mem_watermark = c::BTREE_TRANS_MEM_MAX / snapshot_delete_mem_div.get().max(1);
+    }
+
+    let mut batch_start = start;
+    let mut nr = 0;
+    let mut rewind_to = None;
+
+    // One attempt across the keys of a batch; a new one after every commit,
+    // restart and allocator overflow - as the C loop's bch2_trans_begin()s.
+    let mut t = trans.begin();
+
+    loop {
+        if let Some(p) = rewind_to.take() {
+            iter.set_pos(p);
+        }
+
+        if nr == 0 {
+            batch_start = iter.pos();
+        }
+
+        let mut have_key = false;
+        let mut ret = Ok(());
+
+        match iter.peek_max_type_with(&t, end, iter_flags) {
+            Ok(Some((iter, k))) => {
+                // As C's k.k: an error key is not the end of the range
+                have_key = true;
+                if nr == 0 {
+                    batch_start = k.k.p;
+                }
+
+                ret = process_key(&t, iter, k, run);
+            }
+            Ok(None) => {}
+            Err(e) if is_restart(&e) => {
+                have_key = true;
+                ret = Err(e);
+            }
+            Err(e) => return Err(e),
+        }
+
+        if ret.is_ok() && have_key {
+            t.verify_not_restarted();
+
+            nr += 1;
+            // SAFETY: our transaction
+            if nr < SNAPSHOT_DELETE_COMMIT_BATCH_MAX &&
+               unsafe { (*t.raw()).mem_top } < mem_watermark {
+                iter.advance();
+                continue;
+            }
+        }
+
+        /* Batch full, memory watermark hit, or end of range: commit. */
+        if ret.is_ok() && nr != 0 {
+            match t.commit(Some(res), CommitFlags::NO_ENOSPC) {
+                Ok(()) => {
+                    res.put();
+                    nr = 0;
+                    if !have_key {
+                        break;
+                    }
+                    t = trans.begin();
+                    continue;
+                }
+                Err(e) => ret = Err(e),
+            }
+        }
+
+        if !have_key && nr == 0 {
+            break;
+        }
+
+        let Err(e) = ret else { break };
+
+        if is_restart(&e) {
+            /*
+             * The staged batch was dropped by the restart: rewind to its
+             * first key and re-drive. Already-committed keys were removed at
+             * their source, so the re-driven range skips them.
+             */
+            t = trans.begin_may_drop_updates();
+            rewind_to = Some(batch_start);
+            nr = 0;
+            continue;
+        }
+
+        if e.matches(c::ENOMEM) {
+            /*
+             * ENOMEM_trans_kmalloc: the commit needed more memory than the
+             * staged batch suggested. Drop it, halve the watermark, and
+             * re-drive the same batch smaller; at the floor this degrades to
+             * per-key commits, which always fit. The learned watermark
+             * persists across ranges; clamp >= 1 so 0 stays reserved as
+             * "unset" (use the default).
+             */
+            mem_watermark /= 2;
+            d.key_mem_watermark.store(mem_watermark.max(1), Ordering::Relaxed);
+            t = trans.begin_may_drop_updates();
+            rewind_to = Some(batch_start);
+            nr = 0;
+            continue;
+        }
+
+        return Err(e);
+    }
+
+    Ok(())
+}
+
 fn delete_dead_snapshot_keys_range(
     trans: &BtreeTrans<'_>,
     res:   &DiskReservation<'_>,
@@ -973,12 +1136,7 @@ fn delete_dead_snapshot_keys_range(
     end:   c::bpos,
     run:   &Run<'_>,
 ) -> Result<(), BchError> {
-    let flags = BtreeIterFlags::PREFETCH | BtreeIterFlags::ALL_SNAPSHOTS;
-    let mut iter = BtreeIter::new(trans, btree, start, flags);
-    iter.for_each_max_commit(trans, end, flags, Some(res), CommitFlags::NO_ENOSPC, |t, iter, k| {
-        res.put();
-        process_key(t, iter, k, run)
-    })
+    delete_dead_snapshot_keys_batched(trans, btree, start, end, res, run)
 }
 
 fn delete_dead_snapshot_keys_v2(trans: &BtreeTrans<'_>, run: &Run<'_>) -> Result<(), BchError> {
@@ -1076,12 +1234,8 @@ fn delete_dead_snapshot_keys_v2(trans: &BtreeTrans<'_>, run: &Run<'_>) -> Result
 
     /* Then the inodes */
 
-    let mut iter = BtreeIter::new(trans, c::btree_id::inodes, POS_MIN,
-                                  BtreeIterFlags::PREFETCH | BtreeIterFlags::ALL_SNAPSHOTS);
-    iter.for_each_commit(trans, Some(&res), CommitFlags::NO_ENOSPC, |t, iter, k| {
-        res.put();
-        process_key(t, iter, k, run)
-    })
+    delete_dead_snapshot_keys_batched(trans, c::btree_id::inodes, POS_MIN, crate::SPOS_MAX,
+                                      &res, run)
 }
 
 // ── Choosing what to delete ──────────────────────────────────────────────
