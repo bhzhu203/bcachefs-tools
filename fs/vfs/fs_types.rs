@@ -69,6 +69,14 @@ pub struct bch_inode_info {
     pub ei_inode: c::bch_inode_unpacked,
 
     pub ei_writeback_timer: c::delayed_work,
+
+    /*
+     * Random read detection (HDD only): track the end sector of the
+     * previous readahead window; suppress speculative readahead when
+     * requests keep landing far from it:
+     */
+    pub ei_last_ra_end: c_ulong,
+    pub ei_random_ra_count: c_uint,
 }
 c_default!(bch_inode_info);
 
