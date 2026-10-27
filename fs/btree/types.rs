@@ -940,7 +940,7 @@ c_const! {
     #[c_int]
     pub const BTREE_TRANS_PER_PROC_BUCKETS: u32 = 251; /* prime, collision-tolerant */
     #[c_int]
-    pub const BTREE_TRANS_PER_PROC_LIMIT: u32 = 8; /* max slots per thread group */
+    pub const BTREE_TRANS_PER_PROC_LIMIT: u32 = 8; /* default per-process cap */
 }
 
 #[repr(C)]
@@ -976,7 +976,9 @@ pub struct bch_fs_btree_trans {
      *
      * Per-process fairness: the fixed-size hash table of atomic
      * counters (indexed by task_tgid_vnr) caps each process at
-     * BTREE_TRANS_PER_PROC_LIMIT slots, so a single heavy-IO process
+     * c->opts.trans_per_proc_limit slots (default
+     * BTREE_TRANS_PER_PROC_LIMIT = 8, tunable via the sysfs
+     * trans_per_proc_limit option), so a single heavy-IO process
      * (VM with many vCPUs/IO threads) cannot monopolize either pool
      * and starve shell/systemd/journald.
      */
