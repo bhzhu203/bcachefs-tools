@@ -56,7 +56,7 @@ use crate::btree::bkey::{pos, spos, BkeyI, BkeySC, Typed, POS_MIN};
 use crate::btree::bkey::prelude::*;
 use crate::btree::iter::{
     commit_do, is_restart, lockrestart_do, BtreeIter, BtreeIterFlags, BtreeTrans, CommitFlags,
-    TransAttempt, TransBkey, UpdateTriggerFlags,
+    CommitOpts, TransAttempt, TransBkey, UpdateTriggerFlags, Watermark,
 };
 use crate::c;
 use crate::c::bch_recovery_pass::*;
@@ -951,6 +951,17 @@ fn snapshot_delete_ratelimit(fs: &Fs, run: &Run<'_>) {
     }
 }
 
+/// Commits of the deletion scan: above the normal watermark, so the dirty-ratio
+/// commit throttle exempts them. Deletion is the one workload that must dirty
+/// the btree cache faster than it drains - throttled behind its own dirty
+/// nodes it converges on the drain rate, and a multi-million-key deletion
+/// never finishes. The in-flight write limit still bounds it.
+fn deletion_commit_opts() -> CommitOpts {
+    CommitOpts::new()
+        .watermark(Watermark::BTREE)
+        .flags(CommitFlags::NO_ENOSPC)
+}
+
 fn process_key<'a>(
     t:        &TransAttempt<'a, '_>,
     iter:     &BtreeIter<'a>,
@@ -963,7 +974,7 @@ fn process_key<'a>(
 
     if !fs.snapshots.exists(k.k.p.snapshot) &&
        check_snapshots::check_key_has_snapshot(t, Some(iter), k)? {
-        return t.commit_lazy(CommitFlags::NO_ENOSPC);
+        return t.commit_lazy(deletion_commit_opts());
     }
 
     let Some(dying) = snapshot_id_dying(run, k.k.p.snapshot) else {
@@ -987,7 +998,7 @@ fn delete_dead_snapshot_keys_v1_btree(trans: &BtreeTrans<'_>, btree: c::btree_id
 
     let mut iter = BtreeIter::new(trans, btree, POS_MIN,
                                   BtreeIterFlags::PREFETCH | BtreeIterFlags::ALL_SNAPSHOTS);
-    iter.for_each_commit(trans, Some(&res), CommitFlags::NO_ENOSPC, |t, iter, k| {
+    iter.for_each_commit(trans, Some(&res), deletion_commit_opts(), |t, iter, k| {
         let _ = d.progress.update(t, iter);
 
         res.put();
@@ -1116,7 +1127,7 @@ fn delete_dead_snapshot_keys_batched(
 
         /* Batch full, memory watermark hit, or end of range: commit. */
         if ret.is_ok() && nr != 0 {
-            match t.commit(Some(res), CommitFlags::NO_ENOSPC) {
+            match t.commit(Some(res), deletion_commit_opts()) {
                 Ok(()) => {
                     res.put();
                     nr = 0;
