@@ -71,11 +71,12 @@ pub struct bch_inode_info {
     pub ei_writeback_timer: c::delayed_work,
 
     /*
-     * Random read detection (HDD only): track the end sector of the
-     * previous readahead window; suppress speculative readahead when
-     * requests keep landing far from it:
+     * Random read detection (HDD only): track the end sectors of the
+     * last two readahead windows, so two interleaved sequential
+     * streams aren't mistaken for random access; suppress speculative
+     * readahead when requests keep landing far from both:
      */
-    pub ei_last_ra_end: c_ulong,
+    pub ei_ra_end: [c_ulong; 2],
     pub ei_random_ra_count: c_uint,
 }
 c_default!(bch_inode_info);
