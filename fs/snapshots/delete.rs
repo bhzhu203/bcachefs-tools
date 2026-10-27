@@ -1686,6 +1686,12 @@ pub fn delete_dead_snapshots_forced(fs: &Fs) -> Result<(), BchError> {
 
     *d.nodes.write() = None;
 
+    // The pass ending is the state change that lifts deletion's claims on
+    // copygc: kick it once, so a thread that paced itself down for the
+    // duration re-evaluates now rather than on the allocator's next bucket
+    // free, which may be exactly what it was deferring waiting for.
+    fs.copygc_wakeup();
+
     passes::set_no_ratelimit(fs, BCH_RECOVERY_PASS_check_snapshots);
 
     ret
