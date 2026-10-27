@@ -1030,13 +1030,23 @@ fn delete_dead_snapshot_keys_v1(trans: &BtreeTrans<'_>, run: &Run<'_>) -> Result
 /// bounds journal entry size and lock fan-out if staged updates are tiny.
 const SNAPSHOT_DELETE_COMMIT_BATCH_MAX: usize = 1024;
 
+/// Caps on the updates queued in one deletion batch. The staging watermark
+/// only sees mem_top before commit, but the commit's triggers allocate from
+/// the same 64K bump allocator afterwards - extent deletion queues a
+/// backpointer and disk accounting update per key, plus write buffer entries.
+/// Cap the queued updates so commit-phase memory stays inside the allocator;
+/// metadata triggers are far lighter, so those batches stay larger.
+const SNAPSHOT_DELETE_EXTENTS_UPDATE_CAP: u32 = 128;
+const SNAPSHOT_DELETE_UPDATE_CAP: u32 = 256;
+
 /// Commit batching for migrating/dropping a dying snapshot's keys: the memory
 /// watermark is the real throttle - like BtreeTrans::commit_lazy_if_full(),
 /// but the divisor is the snapshot_delete_mem_div module parameter (default
-/// /16), so the batch adapts to key size. The watermark itself backs off
-/// (halving) whenever the commit path overflows the allocator, since
-/// commit-phase memory - disk accounting arrays grow by powers of two -
-/// scales with the batch.
+/// /16), so the batch adapts to key size. Queued updates are capped as well:
+/// what the extent triggers will allocate at commit isn't visible in the
+/// staging watermark. The watermark itself backs off (halving) whenever the
+/// commit path overflows the allocator, since commit-phase memory - disk
+/// accounting arrays grow by powers of two - scales with the batch.
 fn delete_dead_snapshot_keys_batched(
     trans: &BtreeTrans<'_>,
     btree: c::btree_id,
@@ -1048,6 +1058,11 @@ fn delete_dead_snapshot_keys_batched(
     let fs = trans.fs();
     let d = &fs.snapshots.delete;
     let iter_flags = BtreeIterFlags::PREFETCH | BtreeIterFlags::ALL_SNAPSHOTS;
+    let update_cap = if btree == c::btree_id::extents {
+        SNAPSHOT_DELETE_EXTENTS_UPDATE_CAP
+    } else {
+        SNAPSHOT_DELETE_UPDATE_CAP
+    };
 
     let mut iter = BtreeIter::new(trans, btree, start, iter_flags);
 
@@ -1122,8 +1137,10 @@ fn delete_dead_snapshot_keys_batched(
 
             nr += 1;
             // SAFETY: our transaction
+            let raw = unsafe { &*t.raw() };
             if nr < SNAPSHOT_DELETE_COMMIT_BATCH_MAX &&
-               unsafe { (*t.raw()).mem_top } < mem_watermark {
+               (raw.nr_updates as u32) < update_cap &&
+               raw.mem_top < mem_watermark {
                 iter.advance();
                 continue;
             }
