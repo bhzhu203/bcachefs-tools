@@ -456,6 +456,11 @@ static void bchfs_read_shared(struct btree_trans *trans,
 
 	struct bpos read_pos = POS(inum.inum, rbio->bio.bi_iter.bi_sector);
 
+	/* the readahead window; past this is the speculative extension: */
+	sector_t orig_end = readpages_iter && readpages_iter->folios.nr
+		? folio_end_sector(readpages_iter->folios.data[readpages_iter->folios.nr - 1])
+		: bio_end_sector(&rbio->bio);
+
 	while (1) {
 		struct bkey_s_c k;
 		unsigned bytes, sectors;
@@ -522,18 +527,34 @@ static void bchfs_read_shared(struct btree_trans *trans,
 
 		bch2_bio_page_state_set(c, &rbio->bio, k);
 
-		bch2_read_extent(trans, rbio, read_pos,
-				 data_btree, k, offset_into_extent, flags);
+		ret = bch2_read_extent(trans, rbio, read_pos,
+				       data_btree, k, offset_into_extent, flags);
 
-		if (flags & BCH_READ_last_fragment)
+		/* On successful BCH_READ_last_fragment submit we no longer own rbio: */
+		if (!ret && (flags & BCH_READ_last_fragment))
 			break;
 
 		swap(rbio->bio.bi_iter.bi_size, bytes);
-		bio_advance(&rbio->bio, bytes);
 err:
-		if (ret &&
-		    !bch2_err_matches(ret, BCH_ERR_transaction_restart))
+		if (bch2_err_matches(ret, BCH_ERR_transaction_restart)) {
+			/* everything asked for is issued; the rest isn't worth a retry */
+			if (readpages_iter &&
+			    rbio->bio.bi_iter.bi_sector >= orig_end) {
+				readpage_bio_drop_unissued(rbio);
+				bio_endio(&rbio->bio);
+
+				/* bch2_trans_put() won't take a restarted trans */
+				bch2_trans_begin(trans);
+				return;
+			}
+
+			flags &= ~BCH_READ_last_fragment;
+			continue;
+		}
+		if (ret)
 			break;
+
+		bio_advance(&rbio->bio, bytes);
 	}
 
 	if (ret) {
