@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 #include <linux/atomic.h>
 #include <linux/bug.h>
 #include <linux/completion.h>
@@ -109,6 +110,16 @@ struct task_struct {
 #define MAX_RT_PRIO	0
 
 extern __thread struct task_struct *current;
+
+/*
+ * The thread group id, as bcachefs' btree transaction admission control keys
+ * its per-process slot table. Every thread of a process shares one group;
+ * getpid() is that group's id in the caller's namespace.
+ */
+static inline pid_t task_tgid_vnr(struct task_struct *tsk)
+{
+	return getpid();
+}
 
 #define __set_task_state(tsk, state_value)		\
 	do { (tsk)->state = (state_value); } while (0)

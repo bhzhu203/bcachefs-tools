@@ -974,9 +974,20 @@ int bch2_journal_res_get_slowpath(struct journal *j, struct journal_res *res,
 	bch2_journal_debug_to_text(&buf, j);
 	bch2_print_str(c, KERN_ERR, buf.buf);
 
-	trans_wait_event(trans, &j->async_wait,
+	/*
+	 * The first wait gave the journal time to drain. If it is still
+	 * blocked, a transaction may be holding btree locks while waiting for
+	 * journal space, and the write buffer flush that would free that space
+	 * needs those same btree locks - a dependency chain the lock cycle
+	 * detector cannot see. Wait once more, then fail the transaction so it
+	 * releases its locks and the flush can proceed.
+	 */
+	total_wait = max(total_wait, HZ * 30);
+	if (!trans_wait_event_timeout(trans, &j->async_wait,
 		   !bch2_err_matches(ret = __journal_res_get(j, res, flags), BCH_ERR_operation_blocked) ||
-		   (flags & JOURNAL_RES_GET_NONBLOCK));
+		   (flags & JOURNAL_RES_GET_NONBLOCK),
+		   total_wait))
+		return bch_err_throw(c, journal_res_blocked);
 	return ret;
 }
 

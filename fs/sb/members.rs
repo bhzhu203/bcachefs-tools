@@ -699,6 +699,9 @@ pub fn bch2_sb_members_to_cpu(c: &Opaque<c::bch_fs>) {
     let fs = Fs::from_c(c);
     // SAFETY: C calls it under sb_lock
     let _ = c::bch_sb_field_members_v2::to_cpu(fs, &mut unsafe { fs.sb_lock_held() });
+    // The rotational flags it just read decide whether btree transaction
+    // admission control is needed.
+    unsafe { c::bch2_trans_throttle_update(c.as_ptr()) };
 }
 
 /// The worst IO latency seen, reading or writing as @rw, of @devs, in jiffies:
