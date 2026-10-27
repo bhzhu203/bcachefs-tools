@@ -91,6 +91,8 @@ c_extern! {
     pub fn rust_kvfree(p: *mut c_void);
     pub fn rust_kvfree_rcu(p: *mut c_void);
     pub fn bch2_local_clock() -> u64;
+    pub fn bch2_ratelimit_delay(d: *mut c::bch_ratelimit) -> u64;
+    pub fn bch2_ratelimit_increment(d: *mut c::bch_ratelimit, done: u64);
     pub fn bch2_cond_resched();
     pub fn bch2_msleep(ms: c_uint);
     pub fn bch2_fatal_signal_pending() -> bool;

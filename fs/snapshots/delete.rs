@@ -71,10 +71,14 @@ use crate::snapshots::check_snapshots;
 use crate::snapshots::snapshot;
 use crate::util::alloc::{flags::GFP_KERNEL, KVVec};
 use crate::util::eytzinger::Eytzinger1;
+use crate::util::kernel::local_clock;
+use crate::util::kthread::Kthread;
 use crate::util::log::{self, LogLevel, LogMsg};
+use crate::util::sleep::{sleep_until, Sleep};
 use crate::util::Printbuf;
 use crate::{bch_err, bch_err_msg, bch_info, bch_notice, fs_inconsistent, fsck_err, prt,
             trans_inconsistent};
+use core::ffi::c_ulong;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use pin_init::{pin_data, pin_init, PinInit};
@@ -94,6 +98,12 @@ crate::module_param! {
 }
 
 // ── State ────────────────────────────────────────────────────────────────
+
+/// Pacing for small deletions, in keys migrated per second.
+const SNAPSHOT_DELETE_RATELIMIT_KEYS_PER_SEC: u32 = 50 * 1000;
+/// The backlog below which pacing applies: at or above it, deletion is
+/// falling behind and must run unthrottled.
+const SNAPSHOT_DELETE_BACKLOG_THRESHOLD: usize = 4;
 
 /// An interior node being deleted, and the live child its keys migrate to -
 /// or, in Run::dying, a leaf, with live_child 0.
@@ -127,6 +137,9 @@ pub(crate) struct SnapshotDelete {
     /// locks held: lockdep sees the cycle.
     #[pin]
     nodes:    Lock<c::rw_semaphore, Option<DeleteNodes>>,
+    /// Paces per-key migration when the deletion backlog is small.
+    #[pin]
+    key_rate: Lock<c::spinlock_t, c::bch_ratelimit>,
     /// Which sweep the progress describes: 1 or 2.
     version:  AtomicU32,
     progress: c::progress_indicator,
@@ -136,6 +149,7 @@ impl SnapshotDelete {
     pub(crate) fn init() -> impl PinInit<Self> {
         pin_init!(Self {
             nodes    <- new_lock!(None),
+            key_rate <- new_lock!(Default::default()),
             version:  AtomicU32::new(0),
             progress: ::pin_init::Zeroable::zeroed(),
         })
@@ -854,6 +868,47 @@ pub fn delete_dead_key<'a, 't>(
     t.delete_at(iter, UpdateTriggerFlags::INTERNAL_SNAPSHOT_NODE)
 }
 
+/// Pacing for small deletions: when the backlog of dying snapshot nodes is
+/// small (steady state - snapshots deleted at roughly the rate they're
+/// created), cap the migration key rate so one snapshot deletion doesn't
+/// monopolize the journal and btree io. When the backlog grows (deletion
+/// falling behind), go unthrottled to catch up - pacing there would just make
+/// the backlog grow forever.
+fn snapshot_delete_ratelimit(fs: &Fs, run: &Run<'_>) {
+    let d = &fs.snapshots.delete;
+
+    if run.nodes.delete_leaves.len() + run.nodes.delete_interior.len() >=
+       SNAPSHOT_DELETE_BACKLOG_THRESHOLD {
+        return;
+    }
+
+    // Don't sleep before mount is complete - it blocks mount.bcachefs:
+    if !fs.flag(c::bch_fs_flags::BCH_FS_started) {
+        return;
+    }
+
+    let mut rate = d.key_rate.lock();
+    if rate.rate == 0 {
+        return;
+    }
+
+    // SAFETY: the guard holds the rate limit exclusively; only its fields are
+    // touched.
+    unsafe {
+        c::bch2_ratelimit_increment(&mut *rate, 1);
+    }
+
+    // SAFETY: as above.
+    let delay = unsafe { c::bch2_ratelimit_delay(&mut *rate) };
+    drop(rate);
+
+    if delay != 0 {
+        let _ = sleep_until(Sleep::INTERRUPTIBLE.freezable().timeout(delay as c_ulong),
+                            || None::<()>);
+        Kthread::try_to_freeze();
+    }
+}
+
 fn process_key<'a>(t: &TransAttempt<'a, '_>, iter: &BtreeIter<'a>, k: BkeySC<'_>, run: &Run<'_>)
     -> Result<(), BchError>
 {
@@ -867,6 +922,11 @@ fn process_key<'a>(t: &TransAttempt<'a, '_>, iter: &BtreeIter<'a>, k: BkeySC<'_>
     let Some(dying) = snapshot_id_dying(run, k.k.p.snapshot) else {
         return Ok(());
     };
+
+    // Pace the migration itself, not the scan that finds it: the scan
+    // generates no commits, and throttling it leaves the worker pinned at
+    // the rate limit for entire rounds in which almost nothing is dying.
+    snapshot_delete_ratelimit(fs, run);
 
     delete_dead_key(t, iter, k, dying.live_child)
 }
@@ -1382,6 +1442,11 @@ pub fn delete_dead_snapshots_forced(fs: &Fs) -> Result<(), BchError> {
     passes::assert_run_lock_held(fs);
 
     d.progress.reset();
+
+    *d.key_rate.lock() = c::bch_ratelimit {
+        next: local_clock(),
+        rate: SNAPSHOT_DELETE_RATELIMIT_KEYS_PER_SEC,
+    };
 
     let ret = refused(delete_dead_snapshots_locked(fs));
 
