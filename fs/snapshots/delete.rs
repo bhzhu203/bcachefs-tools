@@ -854,11 +854,16 @@ fn snapshot_id_dying<'r>(run: &Run<'r>, id: u32) -> Option<&'r InteriorDelete> {
 /// already have its own key at that position. With no live descendant (a
 /// leaf) the key is just deleted.
 ///
+/// @dst_iter: optional reusable iterator for the migration target, which the
+/// caller keeps alive across calls and which is repositioned here. When None
+/// a local iterator is created (fsck, and the v1 per-key path).
+///
 /// Shared by the deletion pass (process_key()) and the fsck repair
 /// (check_key_has_snapshot()).
 pub fn delete_dead_key<'a, 't>(
     t:          &TransAttempt<'a, 't>,
     iter:       &BtreeIter<'a>,
+    dst_iter:   Option<&mut BtreeIter<'a>>,
     k:          BkeySC<'_>,
     live_child: u32,
 ) -> Result<(), BchError> {
@@ -870,8 +875,18 @@ pub fn delete_dead_key<'a, 't>(
         let btree = iter.btree();
         let dst = c::bpos { snapshot: live_child, ..k.k.p };
 
-        let mut dst_iter = BtreeIter::new(t, btree, dst,
-                                          BtreeIterFlags::ALL_SNAPSHOTS | BtreeIterFlags::INTENT);
+        let mut local_dst;
+        let dst_iter = match dst_iter {
+            Some(dst_iter) => {
+                dst_iter.set_pos(dst);
+                dst_iter
+            }
+            None => {
+                local_dst = BtreeIter::new(t, btree, dst,
+                                           BtreeIterFlags::ALL_SNAPSHOTS | BtreeIterFlags::INTENT);
+                &mut local_dst
+            }
+        };
         let damage = c::bch_bkey_type::KEY_TYPE_damage;
 
         match dst_iter.peek_slot(t)? {
@@ -881,13 +896,13 @@ pub fn delete_dead_key<'a, 't>(
                 // hold counts recorded after the descendant's key was created,
                 // so "descendant overwrote it" never applies:
                 let new = damage::keys_merge(t, dst, dst_k, k)?;
-                t.update(&dst_iter, &new, UpdateTriggerFlags::INTERNAL_SNAPSHOT_NODE)?;
+                t.update(&*dst_iter, &new, UpdateTriggerFlags::INTERNAL_SNAPSHOT_NODE)?;
             }
             Some(dst_k) if !dst_k.k.is_deleted() => {}
             _ => {
                 let mut new = t.bkey_make_mut_noupdate(k)?;
                 new.k_mut().p = dst;
-                t.update(&dst_iter, &new, UpdateTriggerFlags::INTERNAL_SNAPSHOT_NODE)?;
+                t.update(&*dst_iter, &new, UpdateTriggerFlags::INTERNAL_SNAPSHOT_NODE)?;
             }
         }
     }
@@ -936,8 +951,13 @@ fn snapshot_delete_ratelimit(fs: &Fs, run: &Run<'_>) {
     }
 }
 
-fn process_key<'a>(t: &TransAttempt<'a, '_>, iter: &BtreeIter<'a>, k: BkeySC<'_>, run: &Run<'_>)
-    -> Result<(), BchError>
+fn process_key<'a>(
+    t:        &TransAttempt<'a, '_>,
+    iter:     &BtreeIter<'a>,
+    dst_iter: Option<&mut BtreeIter<'a>>,
+    k:        BkeySC<'_>,
+    run:      &Run<'_>,
+) -> Result<(), BchError>
 {
     let fs = t.fs();
 
@@ -955,7 +975,7 @@ fn process_key<'a>(t: &TransAttempt<'a, '_>, iter: &BtreeIter<'a>, k: BkeySC<'_>
     // the rate limit for entire rounds in which almost nothing is dying.
     snapshot_delete_ratelimit(fs, run);
 
-    delete_dead_key(t, iter, k, dying.live_child)
+    delete_dead_key(t, iter, dst_iter, k, dying.live_child)
 }
 
 fn delete_dead_snapshot_keys_v1_btree(trans: &BtreeTrans<'_>, btree: c::btree_id, run: &Run<'_>)
@@ -971,7 +991,7 @@ fn delete_dead_snapshot_keys_v1_btree(trans: &BtreeTrans<'_>, btree: c::btree_id
         let _ = d.progress.update(t, iter);
 
         res.put();
-        process_key(t, iter, k, run)
+        process_key(t, iter, None, k, run)
     })
 }
 
@@ -1017,6 +1037,19 @@ fn delete_dead_snapshot_keys_batched(
     let mut iter = BtreeIter::new(trans, btree, start, iter_flags);
 
     /*
+     * Reusable iterator for migration-target (dst) lookups. Consecutive dying
+     * keys usually map to nearby dst positions, so repositioning this is
+     * cheaper than allocating and root-traversing a fresh iterator per key:
+     * no allocator work, no bkey_cmp_packed/unpack down to the target slot,
+     * and the btree walk resumes where it left off. Staged updates hold path
+     * refs, and bch2_btree_path_make_mut() clones any path with ref > 1
+     * before repositioning, so this never mutates a path an update points at.
+     * delete_dead_key() repositions it.
+     */
+    let mut dst_iter = BtreeIter::new(trans, btree, POS_MIN,
+                                      BtreeIterFlags::ALL_SNAPSHOTS | BtreeIterFlags::INTENT);
+
+    /*
      * Staging watermark, adaptive: the commit path's own memory (disk
      * accounting arrays grow by powers of two, plus per-update trigger
      * allocations) scales with the batch, so a batch that fit the staging
@@ -1059,7 +1092,7 @@ fn delete_dead_snapshot_keys_batched(
                     batch_start = k.k.p;
                 }
 
-                ret = process_key(&t, iter, k, run);
+                ret = process_key(&t, iter, Some(&mut dst_iter), k, run);
             }
             Ok(None) => {}
             Err(e) if is_restart(&e) => {
