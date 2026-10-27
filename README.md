@@ -17,7 +17,7 @@ Fork changes over upstream
 
 This fork carries stability and performance work for HDD (rotational
 media) deployments, layered on top of upstream bcachefs — currently
-rebased onto upstream/master (`84ece60f2`, 2026-10-24). The fork is 63
+rebased onto upstream/master (`84ece60f2`, 2026-10-24). The fork is 64
 commits over upstream; the groups below list all of them except this
 section's own documentation commits. The pre-rebase history is
 preserved in this repo as the `backup-master-261026-pre-rust` branch.
@@ -33,11 +33,15 @@ days: per-key transactions monopolized the journal and btree IO, copygc
 was dragged into the invalidation storm, and data movers relocated
 extents that were about to disappear anyway.
 
-- **Batched migrations**: up to 32 keys staged per transaction, sized by
-  a transaction-memory watermark that halves itself on ENOMEM and is
-  remembered per-filesystem (module-param tunable divisor), with the
-  migration-target iterator kept alive and repositioned across keys
-  instead of paying a fresh root-to-leaf lookup per key.
+- **Batched migrations**: up to 1024 keys staged per transaction,
+  bounded by a transaction-memory watermark that halves itself on ENOMEM
+  and is remembered per-filesystem (module-param tunable divisor), and
+  by a queued-update cap (128 for extents, 256 elsewhere): extent
+  triggers allocate backpointer and disk accounting updates at commit,
+  after the staging watermark is checked, so a byte-sized batch could
+  still overflow the 64K transaction allocator. The migration-target
+  iterator is kept alive and repositioned across keys instead of paying
+  a fresh root-to-leaf lookup per key.
 - **Pacing**: the migration rate is capped at 50K keys/s while the
   dying-snapshot backlog is small (steady state) and unthrottled when
   it grows; the rate limit counts only keys actually migrated or
@@ -75,7 +79,7 @@ extents that were about to disappear anyway.
 
 Commits: `40717c9d8`, `8ba7037b7`, `a3317468b`, `313a59f6b`,
 `1d9e7bea5`, `14672943e`, `673aa2d6f`, `e65c03655`, `b6417373c`,
-`4b9823194`, `5c55bc30f`, `0ac1aff17`
+`4b9823194`, `5c55bc30f`, `0ac1aff17`, `7c77d31c3`
 
 ### HDD livelock / journal deadlock defense
 
